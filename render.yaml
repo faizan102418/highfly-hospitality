@@ -34,4 +34,3 @@ databases:
     user: highfly_hospitality_dev
     region: singapore
     plan: free
-    diskSizeGB: 1
