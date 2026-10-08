@@ -79,6 +79,17 @@ def initialize_database():
                 db.add(Role(name=name))
         db.commit()
     ensure_pms_core_schema()
+    from .tenancy import Organization, Property, PropertyUserAccess
+    with Session(engine) as db:
+        organization = db.scalar(select(Organization).where(Organization.slug == "highfly-hospitality"))
+        if organization is None:
+            organization = Organization(name="HighFly Hospitality", slug="highfly-hospitality")
+            db.add(organization); db.flush()
+        property_ = db.scalar(select(Property).where(Property.organization_id == organization.id, Property.slug == "la-serene"))
+        if property_ is None:
+            property_ = Property(organization_id=organization.id, name="La Serene Hotel & Resort", code="LA-SERENE", slug="la-serene")
+            db.add(property_); db.flush()
+        db.commit()
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -100,7 +111,17 @@ def bootstrap_admin(payload: BootstrapAdminRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=500, detail="Admin role is not configured")
     user = User(username=payload.username, password_hash=hash_password(payload.password), role_id=role.id)
     db.add(user); db.flush()
-    write_audit(db, "bootstrap", "user", user.id, {"username": user.username, "role": role.name}, user.id)
+    from .tenancy import Organization, Property, PropertyUserAccess
+    property_ = db.scalar(select(Property).where(Property.slug == "la-serene"))
+    if property_ is None:
+        organization = db.scalar(select(Organization).where(Organization.slug == "highfly-hospitality"))
+        if organization is None:
+            organization = Organization(name="HighFly Hospitality", slug="highfly-hospitality")
+            db.add(organization); db.flush()
+        property_ = Property(organization_id=organization.id, name="La Serene Hotel & Resort", code="LA-SERENE", slug="la-serene")
+        db.add(property_); db.flush()
+    db.add(PropertyUserAccess(user_id=user.id, property_id=property_.id, access_scope="organization", is_primary=True))
+    write_audit(db, "bootstrap", "user", user.id, {"username": user.username, "role": role.name, "property_id": property_.id}, user.id)
     db.commit()
     return MeResponse(id=user.id, username=user.username, role=role.name)
 
