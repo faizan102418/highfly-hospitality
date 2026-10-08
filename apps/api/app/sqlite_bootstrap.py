@@ -18,6 +18,7 @@ def register_metadata() -> None:
     from . import pms_core  # noqa: F401
     from . import purchasing  # noqa: F401
     from . import stay_lifecycle  # noqa: F401
+    from . import tenancy  # noqa: F401
 
 
 def initialize_sqlite_database() -> None:
