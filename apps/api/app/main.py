@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
 from .billing import router as billing_router
+from .configuration import router as configuration_router
 from .backup import router as backup_router
 from .db import engine, get_db
 from .expenses import router as expenses_router
@@ -30,6 +31,7 @@ from .schemas import (
 
 app = FastAPI(title="La Serene HMS API", version="0.9.1")
 app.include_router(billing_router)
+app.include_router(configuration_router)
 app.include_router(backup_router)
 app.include_router(expenses_router)
 app.include_router(reports_router, prefix="/api")
