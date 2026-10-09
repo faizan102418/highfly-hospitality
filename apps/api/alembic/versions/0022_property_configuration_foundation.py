@@ -1,15 +1,15 @@
 """Add organization defaults and property branding configuration.
 
-Revision ID: 0022_property_configuration_foundation
-Revises: 0021_property_ownership_foundation
+Revision ID: 0022_property_config
+Revises: 0021_property_ownership
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0022_property_configuration_foundation"
-down_revision = "0021_property_ownership_foundation"
+revision = "0022_property_config"
+down_revision = "0021_property_ownership"
 branch_labels = None
 depends_on = None
 
@@ -121,5 +121,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Keep configuration data safe; use a verified backup for rollback.
     raise RuntimeError(
-        "0022_property_configuration_foundation is intentionally irreversible."
+        "0022_property_config is intentionally irreversible."
     )
