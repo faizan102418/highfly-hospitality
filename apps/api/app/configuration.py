@@ -193,17 +193,24 @@ def update_property_branding(
         raise HTTPException(status_code=404, detail="Property not found")
     _require_property_access(db, user, property_)
     branding = db.scalar(select(PropertyBranding).where(PropertyBranding.property_id == property_id))
-    old_values = {}
+    supplied = payload.model_dump(exclude_unset=True)
     if branding is None:
-        branding = PropertyBranding(property_id=property_id, display_name=payload.display_name)
+        if "display_name" not in supplied:
+            raise HTTPException(status_code=422, detail="display_name is required when creating branding")
+        branding = PropertyBranding(property_id=property_id, display_name=supplied["display_name"])
         db.add(branding)
+        before_values: dict[str, Any] = {}
     else:
-        old_values = {"display_name": branding.display_name, "invoice_display_name": branding.invoice_display_name}
-    for key, value in payload.model_dump().items():
+        before_values = {
+            key: getattr(branding, key)
+            for key in supplied
+        }
+    for key, value in supplied.items():
         setattr(branding, key, value)
+    after_values = {key: getattr(branding, key) for key in supplied}
     _audit(db, user, "update", "property_branding", property_id, {
-        "from": old_values,
-        "to": {"display_name": payload.display_name, "invoice_display_name": payload.invoice_display_name},
+        "from": before_values,
+        "to": after_values,
     })
     db.commit()
     db.refresh(branding)
