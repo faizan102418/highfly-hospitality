@@ -97,8 +97,8 @@ def upgrade() -> None:
         property_id = bind.execute(
             sa.text(
                 "INSERT INTO properties "
-                "(organization_id, name, code, slug, status, timezone, currency) "
-                "VALUES (:org_id, :name, :code, :slug, 'active', 'Asia/Karachi', 'PKR') "
+                "(organization_id, name, code, slug, status, timezone, currency, created_at, updated_at) "
+                "VALUES (:org_id, :name, :code, :slug, 'active', 'Asia/Karachi', 'PKR', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
                 "RETURNING id"
             ),
             {
