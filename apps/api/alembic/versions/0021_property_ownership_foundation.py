@@ -1,6 +1,6 @@
 """Add property ownership to root hotel data.
 
-Revision ID: 0021_property_ownership_foundation
+Revision ID: 0021_property_ownership
 Revises: 0020_multi_tenant_foundation
 """
 
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0021_property_ownership_foundation"
+revision = "0021_property_ownership"
 down_revision = "0020_multi_tenant_foundation"
 branch_labels = None
 depends_on = None
@@ -207,5 +207,5 @@ def downgrade() -> None:
     # Intentionally conservative: removing property ownership would
     # destroy the tenant-isolation foundation.
     raise RuntimeError(
-        "0021_property_ownership_foundation is intentionally irreversible."
+        "0021_property_ownership is intentionally irreversible."
     )
