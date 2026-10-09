@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.main import app  # noqa: F401 - register all API models before creating test metadata
 from app.configuration import BrandingUpdate, SettingsUpdate, _require_organization_access, _require_property_access
 from app.db import Base
 from app.models import Role, User
