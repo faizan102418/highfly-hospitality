@@ -24,6 +24,10 @@ class ConfigurationValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             BrandingUpdate(display_name="La Serene", website="example.com")
 
+    def test_branding_supports_partial_updates(self):
+        payload = BrandingUpdate.model_validate({"primary_color": "#123ABC"})
+        self.assertEqual(payload.model_dump(exclude_unset=True), {"primary_color": "#123ABC"})
+
     def test_settings_rejects_overlong_values(self):
         with self.assertRaises(ValueError):
             SettingsUpdate(settings={"x": "a" * 10001})
