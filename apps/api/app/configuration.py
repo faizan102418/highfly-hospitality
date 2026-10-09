@@ -33,7 +33,7 @@ class SettingsUpdate(BaseModel):
 
 
 class BrandingUpdate(BaseModel):
-    display_name: str = Field(min_length=1, max_length=160)
+    display_name: str | None = Field(default=None, min_length=1, max_length=160)
     logo_storage_key: str | None = Field(default=None, max_length=500)
     address_line1: str | None = Field(default=None, max_length=200)
     address_line2: str | None = Field(default=None, max_length=200)
