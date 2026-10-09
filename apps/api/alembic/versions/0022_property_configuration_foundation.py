@@ -105,8 +105,10 @@ def upgrade() -> None:
     bind.execute(
         sa.text(
             """
-            INSERT INTO property_branding (property_id, display_name, show_logo_on_documents)
-            SELECT p.id, p.name, TRUE
+            INSERT INTO property_branding (
+                property_id, display_name, show_logo_on_documents, created_at, updated_at
+            )
+            SELECT p.id, p.name, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             FROM properties AS p
             WHERE NOT EXISTS (
                 SELECT 1
