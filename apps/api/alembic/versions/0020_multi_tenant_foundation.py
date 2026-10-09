@@ -81,8 +81,8 @@ def upgrade() -> None:
     if org_id is None:
         org_id = bind.execute(
             sa.text(
-                "INSERT INTO organizations (name, slug, status) "
-                "VALUES (:name, :slug, 'active') RETURNING id"
+                "INSERT INTO organizations (name, slug, status, created_at, updated_at) "
+                "VALUES (:name, :slug, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id"
             ),
             {"name": "HighFly Hospitality", "slug": "highfly-hospitality"},
         ).scalar()
