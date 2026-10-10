@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .db import get_db
 from .models import AuditLog, BusinessDateState, DepositTransaction, Folio, Guest, Reservation, ReservationRoom, Room, RoomMove, StayOccupant, StayRateSegment, User
+from .tenancy import resolve_authorized_property
 from .pms_core import Stay
 from .stay_lifecycle import StayFolioWindow
 
@@ -24,17 +25,16 @@ def money(value: Decimal | int | float) -> Decimal:
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
-def business_date(db: Session) -> date:
-    state = db.get(BusinessDateState, 1)
+def business_date(db: Session, *, property_id: int) -> date:
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_id))
     if state is None:
-        state = BusinessDateState(id=1, current_business_date=date.today(), opened_at=datetime.utcnow())
-        db.add(state)
-        db.flush()
+        raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
     return state.current_business_date
 
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def ensure_rate_segments(db: Session, stay: Stay) -> list[StayRateSegment]:
@@ -186,7 +186,8 @@ def room_conflict(db: Session, room_id: int, check_in: date, check_out: date, ex
 
 @router.get("/reservations/{reservation_id}/stay-overview")
 def reservation_stay_overview(reservation_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    reservation = db.get(Reservation, reservation_id)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
     folio = db.scalar(select(Folio).where(Folio.reservation_id == reservation.id).order_by(Folio.id).limit(1))
@@ -235,6 +236,7 @@ def reservation_stay_overview(reservation_id: int, db: Session = Depends(get_db)
 
 @router.post("/stays/{stay_id}/folio-windows", status_code=201)
 def create_rate_lifecycle_folio_window(stay_id: int, payload: FolioWindowCreatePayload, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
     stay = db.get(Stay, stay_id)
     if not stay:
         raise HTTPException(status_code=404, detail="Stay not found")
@@ -260,7 +262,7 @@ def extend_reservation_rate_aware(reservation_id: int, payload: RateAwareExtensi
         raise HTTPException(status_code=409, detail="Only an in-house reservation can be extended")
     if payload.new_check_out <= reservation.check_out:
         raise HTTPException(status_code=400, detail="New check-out date must be later than the current check-out")
-    if payload.new_check_out <= business_date(db):
+    if payload.new_check_out <= business_date(db, property_id=reservation.property_id):
         raise HTTPException(status_code=400, detail="New check-out date must be later than the current business date")
     overrides = {item.stay_id: item for item in payload.rate_overrides}
     stays = db.scalars(select(Stay).where(Stay.reservation_id == reservation.id, Stay.status == "checked_in").order_by(Stay.id)).all()
@@ -308,7 +310,10 @@ def move_stay_rate_aware(stay_id: int, payload: RateAwareRoomMove, db: Session =
         raise HTTPException(status_code=400, detail="Destination room must be different")
     if target.status != "available":
         raise HTTPException(status_code=409, detail="Destination room is not available")
-    move_date = business_date(db)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == stay.reservation_id, Reservation.property_id == property_.id))
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found in the selected property")
+    move_date = business_date(db, property_id=reservation.property_id)
     if not (stay.check_in <= move_date < stay.check_out):
         raise HTTPException(status_code=409, detail="Current business date is outside the stay")
     if room_conflict(db, target.id, move_date, stay.check_out, stay.id):
