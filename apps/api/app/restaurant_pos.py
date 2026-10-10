@@ -29,6 +29,7 @@ from .models import (
     StockMovement,
     User,
 )
+from .tenancy import resolve_authorized_property
 from .financial_authority import folio_ledger_summary
 
 router = APIRouter(prefix="/api/restaurant", tags=["restaurant-pos"])
@@ -94,7 +95,8 @@ def qty(value: Decimal | int | float | str) -> Decimal:
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
     import json
 
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def order_total(db: Session, order: RestaurantOrder) -> tuple[Decimal, Decimal, Decimal]:
@@ -145,7 +147,8 @@ def list_stock_items(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "reception")),
 ):
-    return db.scalars(select(StockItem).order_by(StockItem.name)).all()
+    property_ = resolve_authorized_property(db, _.id)
+    return db.scalars(select(StockItem).where(StockItem.property_id == property_.id).order_by(StockItem.name)).all()
 
 
 @router.post("/stock-items", response_model=StockItemResponse, status_code=201)
@@ -154,16 +157,17 @@ def create_stock_item(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    if db.scalar(select(StockItem.id).where((StockItem.sku == payload.sku) | (StockItem.name == payload.name))):
+    property_ = resolve_authorized_property(db, user.id)
+    if db.scalar(select(StockItem.id).where(StockItem.property_id == property_.id, (StockItem.sku == payload.sku) | (StockItem.name == payload.name))):
         raise HTTPException(status_code=409, detail="Stock item SKU or name already exists")
-    item = StockItem(sku=payload.sku, name=payload.name, unit=payload.unit, on_hand=qty(payload.opening_quantity))
+    item = StockItem(property_id=property_.id, sku=payload.sku, name=payload.name, unit=payload.unit, on_hand=qty(payload.opening_quantity))
     db.add(item)
     db.flush()
     if payload.opening_quantity:
         db.add(
             StockMovement(
                 stock_item_id=item.id,
-                business_date=get_current_business_date(db),
+                business_date=get_current_business_date(db, property_id=property_.id),
                 quantity=qty(payload.opening_quantity),
                 movement_type="opening",
                 reference_type="stock_item",
@@ -184,7 +188,8 @@ def list_menu_items(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "reception")),
 ):
-    stmt = select(MenuItem).order_by(MenuItem.name)
+    property_ = resolve_authorized_property(db, _.id)
+    stmt = select(MenuItem).where(MenuItem.property_id == property_.id).order_by(MenuItem.name)
     if active_only:
         stmt = stmt.where(MenuItem.active.is_(True))
     return db.scalars(stmt).all()
@@ -196,11 +201,12 @@ def create_menu_item(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    if db.scalar(select(MenuItem.id).where(MenuItem.name == payload.name)):
+    property_ = resolve_authorized_property(db, user.id)
+    if db.scalar(select(MenuItem.id).where(MenuItem.property_id == property_.id, MenuItem.name == payload.name)):
         raise HTTPException(status_code=409, detail="Menu item already exists")
-    if payload.stock_item_id and not db.get(StockItem, payload.stock_item_id):
+    if payload.stock_item_id and not db.scalar(select(StockItem).where(StockItem.id == payload.stock_item_id, StockItem.property_id == property_.id)):
         raise HTTPException(status_code=400, detail="Stock item does not exist")
-    item = MenuItem(**payload.model_dump(), unit_price=money(payload.unit_price), stock_quantity_per_unit=qty(payload.stock_quantity_per_unit))
+    item = MenuItem(property_id=property_.id, **payload.model_dump(), unit_price=money(payload.unit_price), stock_quantity_per_unit=qty(payload.stock_quantity_per_unit))
     db.add(item)
     db.flush()
     audit(db, user.id, "create", "menu_item", item.id, {"name": item.name, "unit_price": str(item.unit_price)})
@@ -215,18 +221,20 @@ def create_order(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "reception")),
 ):
-    folio = db.get(Folio, payload.folio_id)
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(select(Folio).where(Folio.id == payload.folio_id, Folio.property_id == property_.id))
     if folio is None:
         raise HTTPException(status_code=404, detail="Folio not found")
     if folio.status != "open":
         raise HTTPException(status_code=409, detail="Folio is closed")
-    reservation = db.get(Reservation, folio.reservation_id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == folio.reservation_id, Reservation.property_id == property_.id))
     if reservation is None:
         raise HTTPException(status_code=409, detail="Folio reservation is missing")
     if reservation.status != "checked_in":
         raise HTTPException(status_code=409, detail="Restaurant charges require a checked-in reservation")
-    business_date = get_current_business_date(db)
+    business_date = get_current_business_date(db, property_id=property_.id)
     order = RestaurantOrder(
+        property_id=property_.id,
         order_no=f"POS-{business_date.strftime('%Y%m%d')}-{token_hex(4).upper()}",
         folio_id=folio.id,
         reservation_id=reservation.id,
@@ -250,8 +258,9 @@ def add_order_item(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "reception")),
 ):
-    order = db.get(RestaurantOrder, order_id)
-    menu = db.get(MenuItem, payload.menu_item_id)
+    property_ = resolve_authorized_property(db, user.id)
+    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id))
+    menu = db.scalar(select(MenuItem).where(MenuItem.id == payload.menu_item_id, MenuItem.property_id == property_.id))
     if order is None or menu is None:
         raise HTTPException(status_code=404, detail="Order or menu item not found")
     if order.status != "open":
@@ -279,7 +288,8 @@ def post_order(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "reception")),
 ):
-    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id).with_for_update())
+    property_ = resolve_authorized_property(db, user.id)
+    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id).with_for_update())
     if order is None:
         raise HTTPException(status_code=404, detail="Restaurant order not found")
     if order.status == "posted":
@@ -287,13 +297,13 @@ def post_order(
     if order.status != "open":
         raise HTTPException(status_code=409, detail="Only open orders can be posted")
 
-    business_date = get_current_business_date(db)
+    business_date = get_current_business_date(db, property_id=property_.id)
     if order.business_date != business_date:
         raise HTTPException(status_code=409, detail="Restaurant order belongs to a closed business date")
-    folio = db.scalar(select(Folio).where(Folio.id == order.folio_id).with_for_update())
+    folio = db.scalar(select(Folio).where(Folio.id == order.folio_id, Folio.property_id == property_.id).with_for_update())
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Restaurant order folio is unavailable")
-    reservation = db.get(Reservation, order.reservation_id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == order.reservation_id, Reservation.property_id == property_.id))
     if reservation is None or reservation.status != "checked_in":
         raise HTTPException(status_code=409, detail="Restaurant order requires an active checked-in reservation")
 
@@ -308,7 +318,7 @@ def post_order(
         subtotal += money(line.quantity * line.unit_price)
 
         if line.stock_quantity_per_unit > 0:
-            stock = db.scalar(select(StockItem).where(StockItem.id == db.scalar(select(MenuItem.stock_item_id).where(MenuItem.id == line.menu_item_id))).with_for_update())
+            stock = db.scalar(select(StockItem).where(StockItem.id == db.scalar(select(MenuItem.stock_item_id).where(MenuItem.id == line.menu_item_id, MenuItem.property_id == property_.id)), StockItem.property_id == property_.id).with_for_update())
             if stock is None:
                 raise HTTPException(status_code=409, detail=f"Stock item for {line.description} is missing")
             required = qty(line.quantity * line.stock_quantity_per_unit)
@@ -423,7 +433,7 @@ def void_posted_order(
             reverse_transaction(db, transaction_id=tx.id, created_by=user.id, reason=reason[:300])
         stock_item_id = db.scalar(select(MenuItem.stock_item_id).where(MenuItem.id == line.menu_item_id))
         if stock_item_id and line.stock_quantity_per_unit > 0:
-            stock = db.scalar(select(StockItem).where(StockItem.id == stock_item_id).with_for_update())
+            stock = db.scalar(select(StockItem).where(StockItem.id == stock_item_id, StockItem.property_id == property_.id).with_for_update())
             if stock is None:
                 raise HTTPException(status_code=409, detail=f"Stock item for {line.description} is missing")
             restore = qty(line.quantity * line.stock_quantity_per_unit)
@@ -457,7 +467,8 @@ def get_order(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "reception")),
 ):
-    order = db.get(RestaurantOrder, order_id)
+    property_ = resolve_authorized_property(db, _.id)
+    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id))
     if order is None:
         raise HTTPException(status_code=404, detail="Restaurant order not found")
     return order_response(db, order)
@@ -479,7 +490,7 @@ def add_pos_payment(
         raise HTTPException(status_code=404, detail="Restaurant order not found")
     if order.status != "posted":
         raise HTTPException(status_code=409, detail="Restaurant order must be posted before payment")
-    folio = db.scalar(select(Folio).where(Folio.id == order.folio_id).with_for_update())
+    folio = db.scalar(select(Folio).where(Folio.id == order.folio_id, Folio.property_id == property_.id).with_for_update())
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Order folio is unavailable")
     existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
