@@ -29,6 +29,7 @@ class User(TimestampMixin, Base):
 class RoomType(TimestampMixin, Base):
     __tablename__ = "room_types"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(80), unique=True)
     base_rate: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -37,6 +38,7 @@ class RoomType(TimestampMixin, Base):
 class Room(TimestampMixin, Base):
     __tablename__ = "rooms"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     number: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     room_type_id: Mapped[int] = mapped_column(ForeignKey("room_types.id"))
     status: Mapped[str] = mapped_column(String(30), default="available", index=True)
@@ -45,6 +47,7 @@ class Room(TimestampMixin, Base):
 class Guest(TimestampMixin, Base):
     __tablename__ = "guests"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     full_name: Mapped[str] = mapped_column(String(160), index=True)
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     email: Mapped[str | None] = mapped_column(String(160), nullable=True)
@@ -55,6 +58,7 @@ class Guest(TimestampMixin, Base):
 class Reservation(TimestampMixin, Base):
     __tablename__ = "reservations"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     guest_id: Mapped[int] = mapped_column(ForeignKey("guests.id"))
     check_in: Mapped[date] = mapped_column(Date)
     check_out: Mapped[date] = mapped_column(Date)
@@ -125,6 +129,7 @@ class Expense(TimestampMixin, Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     action: Mapped[str] = mapped_column(String(100))
     entity_type: Mapped[str] = mapped_column(String(50))
@@ -196,7 +201,8 @@ class ReservationSplit(TimestampMixin, Base):
 
 class BusinessDateState(Base):
     __tablename__ = "business_date_state"
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, unique=True, index=True)
     current_business_date: Mapped[date] = mapped_column(Date)
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -207,6 +213,7 @@ class BusinessDateState(Base):
 class FinancialTransaction(TimestampMixin, Base):
     __tablename__ = "financial_transactions"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     transaction_no: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(100), unique=True, index=True, nullable=True)
     idempotency_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
@@ -240,6 +247,7 @@ class LedgerEntry(Base):
 class MenuItem(TimestampMixin, Base):
     __tablename__ = "menu_items"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     category: Mapped[str] = mapped_column(String(50), default="food")
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
@@ -251,6 +259,7 @@ class MenuItem(TimestampMixin, Base):
 class RestaurantOrder(TimestampMixin, Base):
     __tablename__ = "restaurant_orders"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     order_no: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     folio_id: Mapped[int] = mapped_column(ForeignKey("folios.id"), index=True)
     reservation_id: Mapped[int] = mapped_column(ForeignKey("reservations.id"), index=True)
@@ -279,6 +288,7 @@ class RestaurantOrderItem(TimestampMixin, Base):
 class StockItem(TimestampMixin, Base):
     __tablename__ = "stock_items"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     sku: Mapped[str] = mapped_column(String(60), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     unit: Mapped[str] = mapped_column(String(20), default="unit")
