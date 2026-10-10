@@ -91,3 +91,43 @@ class PropertyBranding(Base):
     show_logo_on_documents: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# Request handlers must resolve a property through this helper instead of
+# silently using a global/default tenant. Callers may pass an explicitly
+# selected property ID; otherwise only the user's marked primary property is
+# eligible. A user with no primary property must complete provisioning first.
+def resolve_authorized_property(db, user_id: int, property_id: int | None = None) -> Property:
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    stmt = (
+        select(Property)
+        .join(PropertyUserAccess, PropertyUserAccess.property_id == Property.id)
+        .where(
+            PropertyUserAccess.user_id == user_id,
+            Property.status == "active",
+            Organization.status == "active",
+            Organization.id == Property.organization_id,
+        )
+        .join(Organization, Organization.id == Property.organization_id)
+    )
+    if property_id is None:
+        stmt = stmt.where(PropertyUserAccess.is_primary.is_(True))
+    else:
+        stmt = stmt.where(Property.id == property_id)
+
+    matches = db.scalars(stmt.order_by(Property.id)).all()
+    if not matches:
+        if property_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No active primary property is configured for this user",
+            )
+        raise HTTPException(status_code=403, detail="No access to the selected property")
+    if property_id is None and len(matches) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Multiple primary properties are configured; select a property explicitly",
+        )
+    return matches[0]
