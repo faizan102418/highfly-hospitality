@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .db import Base, get_db
 from .models import AuditLog, BusinessDateState, StockItem, StockMovement, User
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 QTY = Decimal("0.001")
@@ -96,10 +97,10 @@ def fingerprint(operation_type: str, stock_item_id: int, quantity: Decimal, unit
     return sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def lock_business_date(db: Session) -> date:
-    state = db.scalar(select(BusinessDateState).where(BusinessDateState.id == 1).with_for_update())
+def lock_business_date(db: Session, *, property_id: int) -> date:
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_id).with_for_update())
     if state is None:
-        raise HTTPException(status_code=500, detail="Business date is not initialized")
+        raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
     return state.current_business_date
 
 
@@ -122,7 +123,8 @@ def build_operation_response(row, stock: StockItem, expected_fingerprint: str, r
 
 
 def audit(db: Session, user_id: int, action: str, operation_id: int, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type="stock_operation", entity_id=str(operation_id), details=json.dumps(details)))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type="stock_operation", entity_id=str(operation_id), details=json.dumps(details)))
 
 
 def find_existing(db: Session, key: str):
@@ -178,21 +180,24 @@ def create_operation(db: Session, user: User, stock: StockItem, business_date: d
 
 
 @router.get("/stock-items")
-def list_stock_items(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    return db.scalars(select(StockItem).order_by(StockItem.name)).all()
+def list_stock_items(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    return db.scalars(select(StockItem).where(StockItem.property_id == property_.id).order_by(StockItem.name)).all()
 
 
 @router.get("/movements")
-def list_movements(stock_item_id: int | None = None, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    stmt = select(StockMovement).order_by(StockMovement.id.desc())
+def list_movements(stock_item_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    stmt = select(StockMovement).join(StockItem, StockItem.id == StockMovement.stock_item_id).where(StockItem.property_id == property_.id).order_by(StockMovement.id.desc())
     if stock_item_id is not None:
         stmt = stmt.where(StockMovement.stock_item_id == stock_item_id)
     return db.scalars(stmt.limit(500)).all()
 
 
 @router.get("/stock-items/{stock_item_id}/reconciliation", response_model=ReconciliationResponse)
-def reconcile_stock_item(stock_item_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    stock = db.get(StockItem, stock_item_id)
+def reconcile_stock_item(stock_item_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    stock = db.scalar(select(StockItem).where(StockItem.id == stock_item_id, StockItem.property_id == property_.id))
     if stock is None:
         raise HTTPException(status_code=404, detail="Stock item not found")
     movement_total = qty(db.scalar(select(func.coalesce(func.sum(StockMovement.quantity), 0)).where(StockMovement.stock_item_id == stock.id)) or 0)
@@ -206,8 +211,9 @@ def receive_stock(payload: ReceiveRequest, idempotency_key: str | None = Header(
     key = (idempotency_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required for stock receipt")
-    business_date = lock_business_date(db)
-    stock = db.scalar(select(StockItem).where(StockItem.id == payload.stock_item_id).with_for_update())
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    stock = db.scalar(select(StockItem).where(StockItem.id == payload.stock_item_id, StockItem.property_id == property_.id).with_for_update())
     if stock is None:
         raise HTTPException(status_code=404, detail="Stock item not found")
     return create_operation(db, user, stock, business_date, "receipt", payload.quantity, payload.unit_cost, payload.reason, key)
