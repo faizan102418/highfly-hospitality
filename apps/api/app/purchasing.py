@@ -15,19 +15,20 @@ from .auth import require_roles
 from .db import Base, get_db
 from .models import AuditLog, StockItem, StockMovement, User
 from .inventory import lock_business_date
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api/purchasing", tags=["purchasing"])
 QTY = Decimal("0.001")
 MONEY = Decimal("0.01")
 
 suppliers = Table("suppliers", Base.metadata,
-    Column("id", Integer, primary_key=True), Column("code", String(40), unique=True, index=True, nullable=False),
+    Column("id", Integer, primary_key=True), Column("property_id", Integer, ForeignKey("properties.id"), nullable=False, index=True), Column("code", String(40), unique=True, index=True, nullable=False),
     Column("name", String(160), nullable=False), Column("contact_name", String(120)), Column("phone", String(40)),
     Column("email", String(160)), Column("address", String(400)), Column("active", Boolean, nullable=False, server_default="1"),
     Column("created_at", DateTime, nullable=False, default=datetime.utcnow), Column("updated_at", DateTime, nullable=False, default=datetime.utcnow))
 
 purchase_orders = Table("purchase_orders", Base.metadata,
-    Column("id", Integer, primary_key=True), Column("po_no", String(40), unique=True, index=True, nullable=False),
+    Column("id", Integer, primary_key=True), Column("property_id", Integer, ForeignKey("properties.id"), nullable=False, index=True), Column("po_no", String(40), unique=True, index=True, nullable=False),
     Column("supplier_id", Integer, ForeignKey("suppliers.id"), index=True, nullable=False), Column("business_date", Date, index=True, nullable=False),
     Column("status", String(30), nullable=False), Column("notes", String(500)), Column("created_by", Integer, ForeignKey("users.id"), nullable=False),
     Column("approved_by", Integer, ForeignKey("users.id")), Column("approved_at", DateTime),
@@ -97,7 +98,8 @@ def rowdict(row) -> dict:
 
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details, default=str)))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details, default=str)))
 
 
 def receipt_fingerprint(po_id: int, business_date: date, lines: list[ReceiveLine], notes: str | None) -> str:
@@ -115,40 +117,44 @@ def build_po(db: Session, po: dict) -> dict:
 
 
 @router.get("/suppliers")
-def list_suppliers(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    return [dict(r) for r in db.execute(select(suppliers).order_by(suppliers.c.name)).mappings().all()]
+def list_suppliers(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    return [dict(r) for r in db.execute(select(suppliers).where(suppliers.c.property_id == property_.id).order_by(suppliers.c.name)).mappings().all()]
 
 
 @router.post("/suppliers", status_code=201)
 def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    property_ = resolve_authorized_property(db, user.id)
     code = payload.code.strip().upper()
-    if db.scalar(select(suppliers.c.id).where(suppliers.c.code == code)):
+    if db.scalar(select(suppliers.c.id).where(suppliers.c.property_id == property_.id, suppliers.c.code == code)):
         raise HTTPException(status_code=409, detail="Supplier code already exists")
-    row = db.execute(insert(suppliers).values(code=code, name=payload.name.strip(), contact_name=payload.contact_name, phone=payload.phone, email=payload.email, address=payload.address, active=True).returning(suppliers)).mappings().one()
+    row = db.execute(insert(suppliers).values(property_id=property_.id, code=code, name=payload.name.strip(), contact_name=payload.contact_name, phone=payload.phone, email=payload.email, address=payload.address, active=True).returning(suppliers)).mappings().one()
     audit(db, user.id, "supplier_created", "supplier", row["id"], {"code": code})
     db.commit()
     return dict(row)
 
 
 @router.get("/orders")
-def list_purchase_orders(status: str | None = None, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    stmt = select(purchase_orders).order_by(purchase_orders.c.id.desc())
+def list_purchase_orders(status: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    stmt = select(purchase_orders).where(purchase_orders.c.property_id == property_.id).order_by(purchase_orders.c.id.desc())
     if status: stmt = stmt.where(purchase_orders.c.status == status)
     return [build_po(db, rowdict(r)) for r in db.execute(stmt).all()]
 
 
 @router.post("/orders", status_code=201)
 def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    business_date = lock_business_date(db)
-    supplier = db.execute(select(suppliers).where(suppliers.c.id == payload.supplier_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    supplier = db.execute(select(suppliers).where(suppliers.c.id == payload.supplier_id, suppliers.c.property_id == property_.id).with_for_update()).mappings().first()
     if supplier is None: raise HTTPException(status_code=404, detail="Supplier not found")
     if not supplier["active"]: raise HTTPException(status_code=409, detail="Supplier is inactive")
     ids = [line.stock_item_id for line in payload.lines]
     if len(ids) != len(set(ids)): raise HTTPException(status_code=400, detail="Each stock item may appear only once per purchase order")
-    stocks = {s.id: s for s in db.scalars(select(StockItem).where(StockItem.id.in_(ids)).with_for_update()).all()}
+    stocks = {s.id: s for s in db.scalars(select(StockItem).where(StockItem.id.in_(ids), StockItem.property_id == property_.id).with_for_update()).all()}
     if len(stocks) != len(ids): raise HTTPException(status_code=404, detail="One or more stock items were not found")
     if any(not s.active for s in stocks.values()): raise HTTPException(status_code=409, detail="Purchase orders cannot contain inactive stock items")
-    po = db.execute(insert(purchase_orders).values(po_no=f"PO-{business_date.strftime('%Y%m%d')}-{token_hex(4).upper()}", supplier_id=payload.supplier_id, business_date=business_date, status="draft", notes=payload.notes, created_by=user.id).returning(purchase_orders)).mappings().one()
+    po = db.execute(insert(purchase_orders).values(property_id=property_.id, po_no=f"PO-{business_date.strftime('%Y%m%d')}-{token_hex(4).upper()}", supplier_id=payload.supplier_id, business_date=business_date, status="draft", notes=payload.notes, created_by=user.id).returning(purchase_orders)).mappings().one()
     for line in payload.lines:
         db.execute(insert(purchase_order_lines).values(purchase_order_id=po["id"], stock_item_id=line.stock_item_id, description=line.description.strip(), ordered_quantity=qty(line.ordered_quantity), received_quantity=Decimal("0.000"), unit_cost=money(line.unit_cost)))
     audit(db, user.id, "purchase_order_created", "purchase_order", po["id"], {"supplier_id": payload.supplier_id, "line_count": len(payload.lines), "business_date": str(business_date)})
@@ -157,23 +163,25 @@ def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(ge
 
 
 @router.get("/orders/{po_id}")
-def get_purchase_order(po_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id)).mappings().first()
+def get_purchase_order(po_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id)).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
     return build_po(db, dict(po))
 
 
 @router.post("/orders/{po_id}/approve")
 def approve_purchase_order(po_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    business_date = lock_business_date(db)
-    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).with_for_update()).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
     if po["business_date"] != business_date: raise HTTPException(status_code=409, detail="Purchase order belongs to a different business date")
     if po["status"] != "draft": raise HTTPException(status_code=409, detail="Only draft purchase orders can be approved")
     db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id).values(status="approved", approved_by=user.id, approved_at=datetime.utcnow(), updated_at=datetime.utcnow()))
     audit(db, user.id, "purchase_order_approved", "purchase_order", po_id, {"business_date": str(business_date)})
     db.commit()
-    return build_po(db, dict(db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id)).mappings().one()))
+    return build_po(db, dict(db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id)).mappings().one()))
 
 
 @router.post("/orders/{po_id}/cancel")
@@ -231,5 +239,7 @@ def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key:
 
 
 @router.get("/receipts")
-def list_receipts(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    return [dict(r) for r in db.execute(select(goods_receipts).order_by(goods_receipts.c.id.desc()).limit(500)).mappings().all()]
+def list_receipts(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    stmt = select(goods_receipts).join(purchase_orders, purchase_orders.c.id == goods_receipts.c.purchase_order_id).where(purchase_orders.c.property_id == property_.id).order_by(goods_receipts.c.id.desc()).limit(500)
+    return [dict(r) for r in db.execute(stmt).mappings().all()]
