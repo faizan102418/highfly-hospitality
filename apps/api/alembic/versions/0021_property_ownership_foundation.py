@@ -157,20 +157,58 @@ def upgrade() -> None:
     if missing:
         raise RuntimeError("Cannot apply 0021: expected operational tables are missing: " + ", ".join(missing))
 
-    # Never guess ownership from a customer name or slug. This revision only
-    # upgrades a clean install; legacy rows require an explicit reviewed mapping.
-    counts = {
+    # Never guess ownership from a customer name or slug. Operational records
+    # must be mapped explicitly. Earlier migrations do, however, insert two
+    # singleton *defaults* on a fresh install: today's unclosed business date
+    # and invoice sequence 0. Those defaults are not hotel transactions and
+    # must be removed before adding mandatory property ownership.
+    root_counts = {
         table_name: bind.execute(sa.text(f"SELECT COUNT(*) FROM {table_name}")).scalar_one()
-        for table_name in ALL_PROPERTY_TABLES
+        for table_name in ROOT_TABLES
     }
-    populated = {name: count for name, count in counts.items() if count}
-    if populated:
-        summary = ", ".join(f"{name}={count}" for name, count in populated.items())
+    populated_roots = {name: count for name, count in root_counts.items() if count}
+    if populated_roots:
+        summary = ", ".join(f"{name}={count}" for name, count in populated_roots.items())
         raise RuntimeError(
             "Cannot apply 0021: legacy operational rows exist and property ownership cannot be inferred. "
             "No rows were assigned or changed. Provision a tenant and write an explicit ownership "
             f"migration before retrying. Non-empty tables: {summary}"
         )
+
+    business_state_count = bind.execute(
+        sa.text("SELECT COUNT(*) FROM business_date_state")
+    ).scalar_one()
+    if business_state_count:
+        default_state_count = bind.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM business_date_state "
+                "WHERE id = 1 AND last_closed_at IS NULL "
+                "AND last_closed_business_date IS NULL"
+            )
+        ).scalar_one()
+        if business_state_count != 1 or default_state_count != 1:
+            raise RuntimeError(
+                "Cannot apply 0021: business_date_state contains non-default or multiple rows. "
+                "No rows were assigned or changed; prepare an explicit property ownership migration."
+            )
+
+    invoice_count = bind.execute(
+        sa.text("SELECT COUNT(*) FROM invoice_sequences")
+    ).scalar_one()
+    if invoice_count:
+        default_invoice_count = bind.execute(
+            sa.text("SELECT COUNT(*) FROM invoice_sequences WHERE id = 1 AND last_number = 0")
+        ).scalar_one()
+        if invoice_count != 1 or default_invoice_count != 1:
+            raise RuntimeError(
+                "Cannot apply 0021: invoice_sequences contains used or multiple sequences. "
+                "No rows were assigned or changed; prepare an explicit property ownership migration."
+            )
+
+    # Delete only the verified migration-created defaults. Runtime will
+    # initialize property-scoped state after the first property is provisioned.
+    bind.execute(sa.text("DELETE FROM business_date_state"))
+    bind.execute(sa.text("DELETE FROM invoice_sequences"))
 
     for table_name in ALL_PROPERTY_TABLES:
         _add_property_id(table_name)
