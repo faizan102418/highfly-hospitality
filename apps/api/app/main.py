@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
@@ -12,7 +13,8 @@ from .backup import router as backup_router
 from .db import engine, get_db
 from .expenses import router as expenses_router
 from .inventory import router as inventory_router
-from .models import AuditLog, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, User
+from .models import AuditLog, BusinessDateState, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, User
+from .financial_models import InvoiceSequence
 from .purchasing import router as purchasing_router
 from .phase_a_workflows import router as phase_a_workflows_router
 from .pms_core_bootstrap import ensure_pms_core_schema
@@ -121,6 +123,9 @@ def bootstrap_admin(payload: BootstrapAdminRequest, db: Session = Depends(get_db
     elif property_.name != payload.property_name.strip() or property_.code != payload.property_code or property_.timezone != payload.timezone or property_.currency != payload.currency.upper():
         raise HTTPException(status_code=409, detail="Property slug already exists with different configuration")
     db.add(PropertyUserAccess(user_id=user.id, property_id=property_.id, access_scope="organization", is_primary=True))
+    business_date = datetime.now(ZoneInfo(property_.timezone)).date()
+    db.add(BusinessDateState(property_id=property_.id, current_business_date=business_date))
+    db.add(InvoiceSequence(property_id=property_.id, last_number=0))
     db.commit()
     return MeResponse(id=user.id, username=user.username, role=role.name)
 

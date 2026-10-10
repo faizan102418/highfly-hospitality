@@ -113,6 +113,7 @@ class Payment(TimestampMixin, Base):
 class Expense(TimestampMixin, Base):
     __tablename__ = "expenses"
     id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     description: Mapped[str] = mapped_column(String(200))
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     payment_method: Mapped[str] = mapped_column(String(30))

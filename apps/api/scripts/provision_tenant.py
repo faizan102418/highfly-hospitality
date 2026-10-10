@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import argparse
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import User
+from app.models import BusinessDateState, User
+from app.financial_models import InvoiceSequence
 from app.tenancy import Organization, Property, PropertyUserAccess
 
 
@@ -42,6 +45,10 @@ def main() -> None:
         parser.error("--property-code must contain only letters, numbers, underscore, or hyphen")
     if not re.fullmatch(r"[A-Za-z]{3}", args.currency):
         parser.error("--currency must be a three-letter ISO currency code")
+    try:
+        property_business_date = datetime.now(ZoneInfo(args.timezone)).date()
+    except ZoneInfoNotFoundError:
+        parser.error("--timezone must be a valid IANA timezone")
 
     with SessionLocal() as db:
         organization = db.scalar(
@@ -91,6 +98,13 @@ def main() -> None:
             raise SystemExit(
                 f"User {args.user_username!r} does not exist. Create the administrator first."
             )
+
+        state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
+        if state is None:
+            db.add(BusinessDateState(property_id=property_.id, current_business_date=property_business_date))
+        sequence = db.scalar(select(InvoiceSequence).where(InvoiceSequence.property_id == property_.id))
+        if sequence is None:
+            db.add(InvoiceSequence(property_id=property_.id, last_number=0))
 
         access = db.scalar(
             select(PropertyUserAccess).where(
