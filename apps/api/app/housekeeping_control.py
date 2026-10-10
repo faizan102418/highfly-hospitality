@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .db import Base, get_db
 from .inventory import lock_business_date
+from .tenancy import resolve_authorized_property
 from .models import AuditLog, Reservation, ReservationRoom, Room, User
 
 router = APIRouter(tags=["housekeeping-control"])
@@ -72,7 +73,8 @@ def rowdict(row) -> dict:
 
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details, default=str)))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details, default=str)))
 
 
 def active_maintenance(db: Session, room_id: int):
@@ -137,7 +139,8 @@ def list_housekeeping_tasks(status: str | None = None, room_id: int | None = Non
 
 @router.post("/housekeeping/rooms/{room_id}/tasks", status_code=201)
 def create_task(room_id: int, payload: HousekeepingTaskCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "housekeeping"))):
-    business_date = lock_business_date(db)
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
     room = require_room(db, room_id)
     if active_maintenance(db, room.id):
         raise HTTPException(status_code=409, detail="Room has an active maintenance block")
