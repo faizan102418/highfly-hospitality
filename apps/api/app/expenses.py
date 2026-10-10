@@ -14,6 +14,7 @@ from .business_date import get_current_business_date
 from .db import get_db
 from .ledger import post_transaction, reverse_transaction
 from .models import AuditLog, FinancialTransaction, User
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api/expenses", tags=["expenses"])
 MONEY = Decimal("0.01")
@@ -92,8 +93,9 @@ def list_expenses(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "reception")),
 ):
-    conditions = ["e.status = :status"]
-    params: dict[str, object] = {"status": status}
+    property_ = resolve_authorized_property(db, _.id)
+    conditions = ["e.status = :status", "e.property_id = :property_id"]
+    params: dict[str, object] = {"status": status, "property_id": property_.id}
     if from_date:
         conditions.append("e.expense_date >= :from_date"); params["from_date"] = from_date
     if to_date:
@@ -110,8 +112,9 @@ def list_expenses(
 
 @router.post("", status_code=201)
 def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    expense_date = payload.expense_date or get_current_business_date(db, fallback_to_today=True)
-    business_date = get_current_business_date(db, fallback_to_today=True)
+    property_ = resolve_authorized_property(db, user.id)
+    expense_date = payload.expense_date or get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
+    business_date = get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
     if expense_date != business_date:
         raise HTTPException(status_code=400, detail=f"Expense date must match the current hotel business date {business_date.isoformat()}")
     category = payload.category.strip()
@@ -126,12 +129,12 @@ def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: 
     amount = money(payload.amount)
     created_at = datetime.now()
     result = db.execute(
-        text("""INSERT INTO expenses (description, amount, payment_method, expense_date, expense_no, category, paid_to, reference, department, notes, created_by, status, created_at, updated_at)
-               VALUES (:description, :amount, :payment_method, :expense_date, :expense_no, :category, :paid_to, :reference, :department, :notes, :created_by, 'posted', :created_at, :updated_at)
+        text("""INSERT INTO expenses (property_id, description, amount, payment_method, expense_date, expense_no, category, paid_to, reference, department, notes, created_by, status, created_at, updated_at)
+               VALUES (:property_id, :description, :amount, :payment_method, :expense_date, :expense_no, :category, :paid_to, :reference, :department, :notes, :created_by, 'posted', :created_at, :updated_at)
                RETURNING id""").bindparams(
             bindparam("amount", type_=Numeric(12, 2))
         ),
-        {"description": payload.description.strip(), "amount": amount, "payment_method": payment_method, "expense_date": expense_date, "expense_no": f"TMP-{uuid4().hex}", "category": category, "paid_to": payload.paid_to.strip() if payload.paid_to else None, "reference": payload.reference.strip() if payload.reference else None, "department": department, "notes": payload.notes.strip() if payload.notes else None, "created_by": user.id, "created_at": created_at, "updated_at": created_at},
+        {"property_id": property_.id, "description": payload.description.strip(), "amount": amount, "payment_method": payment_method, "expense_date": expense_date, "expense_no": f"TMP-{uuid4().hex}", "category": category, "paid_to": payload.paid_to.strip() if payload.paid_to else None, "reference": payload.reference.strip() if payload.reference else None, "department": department, "notes": payload.notes.strip() if payload.notes else None, "created_by": user.id, "created_at": created_at, "updated_at": created_at},
     )
     expense_id = int(result.scalar_one())
     expense_no = f"EXP-{expense_id:06d}"
@@ -144,6 +147,7 @@ def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: 
             reference_type="expense",
             reference_id=str(expense_id),
             created_by=user.id,
+            property_id=property_.id,
             idempotency_key=f"expense:{expense_id}",
             lines=[
                 {"account": f"Expense - {category[:45]}", "direction": "debit", "amount": amount},
@@ -153,7 +157,7 @@ def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: 
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    db.add(AuditLog(user_id=user.id, action="create", entity_type="expense", entity_id=str(expense_id), details=f"expense_no={expense_no}; category={category}; department={department}; amount={amount}"))
+    db.add(AuditLog(property_id=property_.id, user_id=user.id, action="create", entity_type="expense", entity_id=str(expense_id), details=f"expense_no={expense_no}; category={category}; department={department}; amount={amount}"))
     db.commit()
     row = db.execute(text("SELECT e.id, e.expense_no, e.expense_date, e.category, e.description, e.amount, e.payment_method, e.paid_to, e.reference, e.department, e.notes, e.created_by, e.status, e.created_at FROM expenses e WHERE e.id = :id"), {"id": expense_id}).mappings().one()
     return _row(row)
@@ -161,20 +165,21 @@ def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db), user: 
 
 @router.patch("/{expense_id}/void")
 def void_expense(expense_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    row = db.execute(text("SELECT id, status FROM expenses WHERE id = :id"), {"id": expense_id}).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    row = db.execute(text("SELECT id, status FROM expenses WHERE id = :id AND property_id = :property_id"), {"id": expense_id, "property_id": property_.id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Expense not found")
     if row["status"] == "voided":
         return {"id": expense_id, "status": "voided"}
-    tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.reference_type == "expense", FinancialTransaction.reference_id == str(expense_id), FinancialTransaction.transaction_type == "expense", FinancialTransaction.status == "posted"))
+    tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.reference_type == "expense", FinancialTransaction.property_id == property_.id, FinancialTransaction.reference_id == str(expense_id), FinancialTransaction.transaction_type == "expense", FinancialTransaction.status == "posted"))
     if tx is not None:
         try:
             reverse_transaction(db, transaction_id=tx.id, created_by=user.id, reason=f"Expense {row['id']} voided")
         except ValueError as exc:
             db.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-    db.execute(text("UPDATE expenses SET status = 'voided' WHERE id = :id"), {"id": expense_id})
-    db.add(AuditLog(user_id=user.id, action="void", entity_type="expense", entity_id=str(expense_id), details="expense voided"))
+    db.execute(text("UPDATE expenses SET status = 'voided' WHERE id = :id AND property_id = :property_id"), {"id": expense_id, "property_id": property_.id})
+    db.add(AuditLog(property_id=property_.id, user_id=user.id, action="void", entity_type="expense", entity_id=str(expense_id), details="expense voided"))
     db.commit()
     return {"id": expense_id, "status": "voided"}
 
@@ -186,12 +191,13 @@ def expense_summary(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "reception")),
 ):
-    start = from_date or get_current_business_date(db, fallback_to_today=True)
+    property_ = resolve_authorized_property(db, _.id)
+    start = from_date or get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
     end = to_date or start
     if end < start:
         raise HTTPException(status_code=400, detail="to_date must be on or after from_date")
-    params = {"from_date": start, "to_date": end}
-    total = db.execute(text("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE status='posted' AND expense_date BETWEEN :from_date AND :to_date"), params).scalar_one()
+    params = {"from_date": start, "to_date": end, "property_id": property_.id}
+    total = db.execute(text("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE property_id=:property_id AND status='posted' AND expense_date BETWEEN :from_date AND :to_date"), params).scalar_one()
     by_category = db.execute(text("SELECT category, COALESCE(SUM(amount),0) AS amount FROM expenses WHERE status='posted' AND expense_date BETWEEN :from_date AND :to_date GROUP BY category ORDER BY amount DESC"), params).mappings().all()
     by_department = db.execute(text("SELECT department, COALESCE(SUM(amount),0) AS amount FROM expenses WHERE status='posted' AND expense_date BETWEEN :from_date AND :to_date GROUP BY department ORDER BY amount DESC"), params).mappings().all()
     by_payment = db.execute(text("SELECT payment_method, COALESCE(SUM(amount),0) AS amount FROM expenses WHERE status='posted' AND expense_date BETWEEN :from_date AND :to_date GROUP BY payment_method ORDER BY amount DESC"), params).mappings().all()
