@@ -222,7 +222,7 @@ def create_order(
     user: User = Depends(require_roles("admin", "reception")),
 ):
     property_ = resolve_authorized_property(db, user.id)
-    folio = db.scalar(select(Folio).where(Folio.id == payload.folio_id, Folio.property_id == property_.id))
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == payload.folio_id, Reservation.property_id == property_.id))
     if folio is None:
         raise HTTPException(status_code=404, detail="Folio not found")
     if folio.status != "open":
@@ -300,7 +300,7 @@ def post_order(
     business_date = get_current_business_date(db, property_id=property_.id)
     if order.business_date != business_date:
         raise HTTPException(status_code=409, detail="Restaurant order belongs to a closed business date")
-    folio = db.scalar(select(Folio).where(Folio.id == order.folio_id, Folio.property_id == property_.id).with_for_update())
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == order.folio_id, Reservation.property_id == property_.id).with_for_update())
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Restaurant order folio is unavailable")
     reservation = db.scalar(select(Reservation).where(Reservation.id == order.reservation_id, Reservation.property_id == property_.id))

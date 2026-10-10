@@ -105,7 +105,12 @@ def post_transaction(
         folio = db.get(Folio, folio_id)
         if folio is None:
             raise ValueError("Folio does not exist")
-        referenced_property_ids.add(folio.property_id)
+        folio_reservation = db.get(Reservation, folio.reservation_id)
+        if folio_reservation is None:
+            raise ValueError("Folio reservation does not exist")
+        referenced_property_ids.add(folio_reservation.property_id)
+        if reservation_id is not None and folio.reservation_id != reservation_id:
+            raise ValueError("Folio and reservation references do not match")
     if reservation_id is not None:
         reservation = db.get(Reservation, reservation_id)
         if reservation is None:
@@ -129,7 +134,8 @@ def post_transaction(
         line_folio_id = line.get("folio_id")
         if line_folio_id is not None:
             line_folio = db.get(Folio, line_folio_id)
-            if line_folio is None or line_folio.property_id != property_id:
+            line_reservation = db.get(Reservation, line_folio.reservation_id) if line_folio is not None else None
+            if line_reservation is None or line_reservation.property_id != property_id:
                 raise ValueError("Ledger line folio must belong to the transaction property")
 
     key = normalize_idempotency_key(idempotency_key)

@@ -189,7 +189,7 @@ def transfer_item_to_window(folio_id: int, window_id: int, payload: WindowTransf
 @router.get("/folios/{folio_id}/invoice")
 def get_invoice(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    invoice = db.scalar(select(Invoice).join(Folio, Folio.id == Invoice.folio_id).where(Invoice.folio_id == folio_id, Folio.property_id == property_.id))
+    invoice = db.scalar(select(Invoice).join(Folio, Folio.id == Invoice.folio_id).join(Reservation, Reservation.id == Folio.reservation_id).where(Invoice.folio_id == folio_id, Reservation.property_id == property_.id))
     if not invoice: raise HTTPException(status_code=404, detail="Invoice not found")
     return {"id": invoice.id, "invoice_no": invoice.invoice_no, "folio_id": invoice.folio_id, "reservation_id": invoice.reservation_id, "business_date": invoice.business_date, "total": invoice.total, "currency": invoice.currency, "status": invoice.status, "issued_at": invoice.issued_at}
 
@@ -197,7 +197,7 @@ def get_invoice(folio_id: int, db: Session = Depends(get_db), user: User = Depen
 @router.post("/folios/{folio_id}/invoice", status_code=201)
 def issue_invoice(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    folio = db.scalar(select(Folio).where(Folio.id == folio_id, Folio.property_id == property_.id))
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id))
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     existing = db.scalar(select(Invoice).where(Invoice.folio_id == folio_id))
     if existing: return {"id": existing.id, "invoice_no": existing.invoice_no, "folio_id": existing.folio_id, "reservation_id": existing.reservation_id, "business_date": existing.business_date, "total": existing.total, "currency": existing.currency, "status": existing.status, "issued_at": existing.issued_at}
