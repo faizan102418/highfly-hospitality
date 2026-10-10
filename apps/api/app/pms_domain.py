@@ -28,6 +28,7 @@ from .models import (
     User,
 )
 from .pms_core import Stay
+from .tenancy import resolve_authorized_property
 
 # This router is mounted inside billing.py, whose prefix is already /api.
 router = APIRouter(prefix="", tags=["pms-domain"])
@@ -40,7 +41,8 @@ def money(value: Decimal | int | float) -> Decimal:
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict | None = None) -> None:
     import json
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details or {})))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details or {})))
 
 
 def ensure_default_rate_segment(db: Session, stay: Stay) -> list[StayRateSegment]:
@@ -175,11 +177,11 @@ class ReservationSplitCreate(BaseModel):
 
 
 @router.get("/business-date")
-def get_business_date(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    state = db.get(BusinessDateState, 1)
+def get_business_date(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
     if state is None:
-        state = BusinessDateState(id=1, current_business_date=date.today(), opened_at=datetime.utcnow())
-        db.add(state); db.commit(); db.refresh(state)
+        raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
     return {"business_date": state.current_business_date, "opened_at": state.opened_at, "last_closed_at": state.last_closed_at}
 
 
