@@ -151,54 +151,33 @@ def _add_property_index(table_name: str) -> None:
 
 
 def upgrade() -> None:
-    # Add nullable ownership columns first so existing rows can be
-    # safely backfilled.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    missing = [name for name in ALL_PROPERTY_TABLES if name not in inspector.get_table_names()]
+    if missing:
+        raise RuntimeError("Cannot apply 0021: expected operational tables are missing: " + ", ".join(missing))
+
+    # Never guess ownership from a customer name or slug. This revision only
+    # upgrades a clean install; legacy rows require an explicit reviewed mapping.
+    counts = {
+        table_name: bind.execute(sa.text(f"SELECT COUNT(*) FROM {table_name}")).scalar_one()
+        for table_name in ALL_PROPERTY_TABLES
+    }
+    populated = {name: count for name, count in counts.items() if count}
+    if populated:
+        summary = ", ".join(f"{name}={count}" for name, count in populated.items())
+        raise RuntimeError(
+            "Cannot apply 0021: legacy operational rows exist and property ownership cannot be inferred. "
+            "No rows were assigned or changed. Provision a tenant and write an explicit ownership "
+            f"migration before retrying. Non-empty tables: {summary}"
+        )
+
     for table_name in ALL_PROPERTY_TABLES:
         _add_property_id(table_name)
-
-    bind = op.get_bind()
-
-    # The existing system has one seeded property: La Serene.
-    # All pre-tenancy operational data therefore belongs to that property.
-    property_id = bind.execute(
-        sa.text(
-            """
-            SELECT id
-            FROM properties
-            WHERE slug = 'la-serene'
-            ORDER BY id
-            LIMIT 1
-            """
-        )
-    ).scalar()
-
-    if property_id is None:
-        raise RuntimeError(
-            "Cannot apply 0021: La Serene property was not found."
-        )
-
-    for table_name in ALL_PROPERTY_TABLES:
-        bind.execute(
-            sa.text(
-                f"""
-                UPDATE {table_name}
-                SET property_id = :property_id
-                WHERE property_id IS NULL
-                """
-            ),
-            {"property_id": property_id},
-        )
-
-    # Ownership becomes mandatory after backfill.
     for table_name in ALL_PROPERTY_TABLES:
         _make_property_id_not_null(table_name)
-
-    # Business-date state and invoice numbering are maintained
-    # independently for each property.
     for table_name in STATE_TABLES:
         _add_property_unique_constraint(table_name)
-
-    # Index property ownership for all property-owned tables.
     for table_name in ALL_PROPERTY_TABLES:
         _add_property_index(table_name)
 

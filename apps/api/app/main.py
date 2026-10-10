@@ -81,17 +81,6 @@ def initialize_database():
                 db.add(Role(name=name))
         db.commit()
     ensure_pms_core_schema()
-    from .tenancy import Organization, Property, PropertyUserAccess
-    with Session(engine) as db:
-        organization = db.scalar(select(Organization).where(Organization.slug == "highfly-hospitality"))
-        if organization is None:
-            organization = Organization(name="HighFly Hospitality", slug="highfly-hospitality")
-            db.add(organization); db.flush()
-        property_ = db.scalar(select(Property).where(Property.organization_id == organization.id, Property.slug == "la-serene"))
-        if property_ is None:
-            property_ = Property(organization_id=organization.id, name="La Serene Hotel & Resort", code="LA-SERENE", slug="la-serene")
-            db.add(property_); db.flush()
-        db.commit()
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -114,16 +103,19 @@ def bootstrap_admin(payload: BootstrapAdminRequest, db: Session = Depends(get_db
     user = User(username=payload.username, password_hash=hash_password(payload.password), role_id=role.id)
     db.add(user); db.flush()
     from .tenancy import Organization, Property, PropertyUserAccess
-    property_ = db.scalar(select(Property).where(Property.slug == "la-serene"))
+    organization = db.scalar(select(Organization).where(Organization.slug == payload.organization_slug))
+    if organization is None:
+        organization = Organization(name=payload.organization_name.strip(), slug=payload.organization_slug)
+        db.add(organization); db.flush()
+    elif organization.name != payload.organization_name.strip():
+        raise HTTPException(status_code=409, detail="Organization slug already exists with a different name")
+    property_ = db.scalar(select(Property).where(Property.organization_id == organization.id, Property.slug == payload.property_slug))
     if property_ is None:
-        organization = db.scalar(select(Organization).where(Organization.slug == "highfly-hospitality"))
-        if organization is None:
-            organization = Organization(name="HighFly Hospitality", slug="highfly-hospitality")
-            db.add(organization); db.flush()
-        property_ = Property(organization_id=organization.id, name="La Serene Hotel & Resort", code="LA-SERENE", slug="la-serene")
+        property_ = Property(organization_id=organization.id, name=payload.property_name.strip(), code=payload.property_code, slug=payload.property_slug, timezone=payload.timezone, currency=payload.currency.upper())
         db.add(property_); db.flush()
+    elif property_.name != payload.property_name.strip() or property_.code != payload.property_code or property_.timezone != payload.timezone or property_.currency != payload.currency.upper():
+        raise HTTPException(status_code=409, detail="Property slug already exists with different configuration")
     db.add(PropertyUserAccess(user_id=user.id, property_id=property_.id, access_scope="organization", is_primary=True))
-    write_audit(db, "bootstrap", "user", user.id, {"username": user.username, "role": role.name, "property_id": property_.id}, user.id)
     db.commit()
     return MeResponse(id=user.id, username=user.username, role=role.name)
 
