@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import engine
 from app.models import Guest, Reservation
+from tenant_test_support import ensure_test_property
 
 
 class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
@@ -17,10 +18,12 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
 
     def test_reservation_status_transitions_are_constrained(self):
         with Session(engine) as db:
-            guest = Guest(full_name="Lifecycle Test Guest")
+            property_ = ensure_test_property(db)
+            guest = Guest(property_id=property_.id, full_name="Lifecycle Test Guest")
             db.add(guest)
             db.flush()
             reservation = Reservation(
+                property_id=property_.id,
                 guest_id=guest.id,
                 check_in=date(2026, 9, 10),
                 check_out=date(2026, 9, 12),
@@ -87,6 +90,7 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
             db.flush()
             db.add(
                 Reservation(
+                    property_id=property_.id,
                     guest_id=guest.id,
                     check_in=date(2026, 9, 12),
                     check_out=date(2026, 9, 12),
