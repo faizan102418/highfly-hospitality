@@ -400,9 +400,9 @@ def list_reservations(status_filter: str | None = Query(default=None, alias="sta
 def front_desk(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     property_ = resolve_authorized_property(db, user.id)
     today = get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
-    arrivals = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.check_in == today, Reservation.status == "reserved").order_by(Reservation.id)).all()
-    departures = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.check_out == today, Reservation.status == "checked_in").order_by(Reservation.id)).all()
-    in_house = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.status == "checked_in").order_by(Reservation.check_out, Reservation.id)).all()
+    arrivals = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.check_in == today, Reservation.status == "reserved").order_by(Reservation.id)).all()
+    departures = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.check_out == today, Reservation.status == "checked_in").order_by(Reservation.id)).all()
+    in_house = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.status == "checked_in").order_by(Reservation.check_out, Reservation.id)).all()
     return FrontDeskResponse(arrivals=[reservation_list_item(db, r, g) for r, g in arrivals], departures=[reservation_list_item(db, r, g) for r, g in departures], in_house=[reservation_list_item(db, r, g) for r, g in in_house])
 
 
@@ -429,12 +429,13 @@ def create_reservation(payload: ReservationCreate, db: Session = Depends(get_db)
 
 @app.post("/api/reservations/{reservation_id}/check-in", response_model=CheckInResponse)
 def check_in_reservation(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "reserved": raise HTTPException(status_code=409, detail="Reservation is not awaiting check-in")
     if reservation.check_in > date.today(): raise HTTPException(status_code=409, detail="Reservation check-in date is in the future")
     room_ids = db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()
-    rooms = [db.get(Room, rid) for rid in room_ids]
+    rooms = [db.scalar(select(Room).where(Room.id == rid, Room.property_id == property_.id)) for rid in room_ids]
     if not rooms or any(room is None for room in rooms): raise HTTPException(status_code=409, detail="Reservation has an invalid room assignment")
     blocked = [room.number for room in rooms if room.status in ("dirty", "out_of_order", "occupied")]
     if blocked: raise HTTPException(status_code=409, detail=f"Assigned room(s) cannot be checked in: {', '.join(blocked)}")
@@ -456,7 +457,8 @@ def check_in_reservation(reservation_id: int, db: Session = Depends(get_db), use
 
 @app.post("/api/reservations/{reservation_id}/check-out", response_model=CheckOutResponse)
 def check_out_reservation(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "checked_in": raise HTTPException(status_code=409, detail="Reservation is not checked in")
     room_ids = db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()
@@ -476,11 +478,12 @@ def check_out_reservation(reservation_id: int, db: Session = Depends(get_db), us
 
 @app.post("/api/reservations/{reservation_id}/transfer", response_model=ReservationResponse)
 def transfer_room(reservation_id: int, payload: RoomTransferRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
     if payload.from_room_id == payload.to_room_id: raise HTTPException(status_code=400, detail="Source and destination rooms must be different")
-    reservation = db.get(Reservation, reservation_id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "checked_in": raise HTTPException(status_code=409, detail="Room transfer requires a checked-in reservation")
-    source = db.get(Room, payload.from_room_id); target = db.get(Room, payload.to_room_id)
+    source = db.scalar(select(Room).where(Room.id == payload.from_room_id, Room.property_id == property_.id)); target = db.scalar(select(Room).where(Room.id == payload.to_room_id, Room.property_id == property_.id))
     if not source or not target: raise HTTPException(status_code=404, detail="Source or destination room not found")
     link = db.scalar(select(ReservationRoom).where(ReservationRoom.reservation_id == reservation.id, ReservationRoom.room_id == source.id))
     if not link: raise HTTPException(status_code=409, detail="Source room is not assigned to this reservation")
