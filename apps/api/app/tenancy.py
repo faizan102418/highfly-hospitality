@@ -103,14 +103,13 @@ def resolve_authorized_property(db, user_id: int, property_id: int | None = None
 
     stmt = (
         select(Property)
+        .join(Organization, Organization.id == Property.organization_id)
         .join(PropertyUserAccess, PropertyUserAccess.property_id == Property.id)
         .where(
             PropertyUserAccess.user_id == user_id,
             Property.status == "active",
             Organization.status == "active",
-            Organization.id == Property.organization_id,
         )
-        .join(Organization, Organization.id == Property.organization_id)
     )
     if property_id is None:
         stmt = stmt.where(PropertyUserAccess.is_primary.is_(True))
