@@ -86,7 +86,7 @@ class InventoryControlTests(unittest.TestCase):
         self.db.commit()
         with self.assertRaises(HTTPException) as ctx:
             receive_stock(ReceiveRequest(stock_item_id=self.stock.id, quantity=Decimal("1.000"), reason="No business date"), "no-date", self.db, self.user)
-        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(ctx.exception.status_code, 503)
 
 
 if __name__ == "__main__":
