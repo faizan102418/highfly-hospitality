@@ -36,7 +36,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
             {"account": "Cash", "direction": "debit", "amount": Decimal("25.00")},
             {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("25.00")},
         ]
-        first = post_transaction(self.db, transaction_type="cash_sale", description="Room sale", idempotency_key="sale-1", lines=lines)
+        first = post_transaction(self.db, transaction_type="cash_sale", description="Room sale", idempotency_key="sale-1", lines=lines, property_id=self.property.id)
         second = post_transaction(self.db, transaction_type="cash_sale", description="Room sale", idempotency_key="sale-1", lines=lines)
         self.assertEqual(first.id, second.id)
         self.assertEqual(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.idempotency_key == "sale-1")), first.id)
@@ -51,6 +51,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
             idempotency_key="sale-2",
             reference_type="folio_item",
             reference_id="41",
+            property_id=self.property.id,
             lines=[
                 {"account": "Cash", "direction": "debit", "amount": Decimal("25.00")},
                 {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("25.00")},
