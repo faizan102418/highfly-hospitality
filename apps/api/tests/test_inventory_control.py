@@ -82,7 +82,7 @@ class InventoryControlTests(unittest.TestCase):
         self.assertEqual(result.movement_total, Decimal("14.000"))
 
     def test_missing_business_date_is_rejected(self):
-        self.db.delete(self.db.get(BusinessDateState, 1))
+        self.db.delete(self.db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == self.property.id)))
         self.db.commit()
         with self.assertRaises(HTTPException) as ctx:
             receive_stock(ReceiveRequest(stock_item_id=self.stock.id, quantity=Decimal("1.000"), reason="No business date"), "no-date", self.db, self.user)
