@@ -11,7 +11,7 @@ from .models import BusinessDateState
 
 def _require_property_id(property_id: int | None) -> int:
     if property_id is None:
-        raise HTTPException(status_code=409, detail="An authorized property must be selected before using business-date state")
+        raise HTTPException(status_code=503, detail="An authorized property must be selected before using business-date state")
     return property_id
 
 
