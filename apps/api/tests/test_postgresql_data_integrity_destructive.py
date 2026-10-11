@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.ledger import post_transaction, reverse_transaction
 from app.models import Base, BusinessDateState, FinancialTransaction, LedgerEntry, Role, User
 from app.pms_core import Stay  # noqa: F401 - register the stays table on Base.metadata
@@ -64,7 +65,7 @@ class PostgreSQLDataIntegrityDestructiveTests(unittest.TestCase):
 
         state = self.db.get(BusinessDateState, 1)
         if state is None:
-            state = BusinessDateState(id=1)
+            state = BusinessDateState(property_id=property_.id, id=1)
             self.db.add(state)
         state.current_business_date = date(2026, 9, 15)
         state.last_closed_business_date = None
