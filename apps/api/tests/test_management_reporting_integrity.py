@@ -110,7 +110,7 @@ class ManagementReportingIntegrityTests(unittest.TestCase):
         self.assertEqual(report["finance"]["revenue_difference"], Decimal("0.00"))
 
     def test_management_report_does_not_depend_on_folio_item_created_at(self):
-        report = management_report(self.db)
+        report = management_report(self.db, self.user)
         self.assertEqual(report["revenue"]["room"], Decimal("90.00"))
 
 
