@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.models import BusinessDateState, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayRateSegment, User
 from tenant_test_support import ensure_test_property
+from app.tenancy import PropertyUserAccess
 from app.pms_core import Stay
 from app.rate_lifecycle import RateAwareExtension, RateAwareRoomMove, RateOverride, business_date, extend_reservation_rate_aware, move_stay_rate_aware
 
@@ -29,6 +30,8 @@ class RateLifecycleTests(unittest.TestCase):
         self.db.flush()
         user = User(username=f"rate-{id(self)}", password_hash="test", role_id=role.id)
         self.db.add(user)
+        self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=user.id, property_id=self.property.id, access_scope="property", is_primary=True))
         room_type = RoomType(property_id=self.property.id, name=f"RateRoom-{guest.id}", base_rate=120)
         self.db.add(room_type)
         self.db.flush()
