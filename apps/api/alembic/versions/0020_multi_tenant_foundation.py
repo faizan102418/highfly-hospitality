@@ -74,55 +74,8 @@ def upgrade() -> None:
         )
         op.create_index("ix_property_settings_property_id", "property_settings", ["property_id"])
 
-    org_id = bind.execute(
-        sa.text("SELECT id FROM organizations WHERE slug = :slug"),
-        {"slug": "highfly-hospitality"},
-    ).scalar()
-    if org_id is None:
-        org_id = bind.execute(
-            sa.text(
-                "INSERT INTO organizations (name, slug, status) "
-                "VALUES (:name, :slug, 'active') RETURNING id"
-            ),
-            {"name": "HighFly Hospitality", "slug": "highfly-hospitality"},
-        ).scalar()
-
-    property_id = bind.execute(
-        sa.text(
-            "SELECT id FROM properties WHERE organization_id = :org_id AND slug = :slug"
-        ),
-        {"org_id": org_id, "slug": "la-serene"},
-    ).scalar()
-    if property_id is None:
-        property_id = bind.execute(
-            sa.text(
-                "INSERT INTO properties "
-                "(organization_id, name, code, slug, status, timezone, currency) "
-                "VALUES (:org_id, :name, :code, :slug, 'active', 'Asia/Karachi', 'PKR') "
-                "RETURNING id"
-            ),
-            {
-                "org_id": org_id,
-                "name": "La Serene Hotel & Resort",
-                "code": "LA-SERENE",
-                "slug": "la-serene",
-            },
-        ).scalar()
-
-    bind.execute(
-        sa.text(
-            "INSERT INTO property_user_access "
-            "(user_id, property_id, access_scope, is_primary) "
-            "SELECT u.id, :property_id, "
-            "CASE WHEN r.name = 'admin' THEN 'organization' ELSE 'property' END, "
-            "TRUE FROM users u JOIN roles r ON r.id = u.role_id "
-            "WHERE NOT EXISTS ("
-            " SELECT 1 FROM property_user_access pua "
-            " WHERE pua.user_id = u.id AND pua.property_id = :property_id"
-            ")"
-        ),
-        {"property_id": property_id},
-    )
+    # Customer organizations, properties, and user access are provisioned explicitly
+    # by an operator or the first-admin bootstrap flow. Migrations remain tenant-neutral.
 
 
 def downgrade() -> None:

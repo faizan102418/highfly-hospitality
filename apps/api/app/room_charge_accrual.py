@@ -54,10 +54,11 @@ def _remaining_room_nights(db: Session, *, stay: Stay, business_date: date) -> D
     return max(Decimal("0"), elapsed - charged)
 
 
-def preview_room_charges_for_business_date(db: Session, *, business_date: date) -> list[dict]:
+def preview_room_charges_for_business_date(db: Session, *, business_date: date, property_id: int) -> list[dict]:
     """Return room-night charges that Night Audit would post, without mutating data."""
     stays = db.scalars(
-        select(Stay).where(
+        select(Stay).join(Reservation, Reservation.id == Stay.reservation_id).where(
+            Reservation.property_id == property_id,
             Stay.status == "checked_in",
             Stay.check_in <= business_date,
             Stay.check_out >= business_date,
@@ -118,7 +119,7 @@ def preview_room_charges_for_business_date(db: Session, *, business_date: date) 
     return preview
 
 
-def accrue_room_charges_for_business_date(db: Session, *, business_date: date, created_by: int) -> int:
+def accrue_room_charges_for_business_date(db: Session, *, business_date: date, created_by: int, property_id: int) -> int:
     """Reconcile every missing room night for the supplied business date.
 
     The exact stay + business-date reconciler is the single source of truth for
@@ -130,7 +131,9 @@ def accrue_room_charges_for_business_date(db: Session, *, business_date: date, c
     reservation_ids = db.scalars(
         select(Folio.reservation_id)
         .join(Stay, Stay.reservation_id == Folio.reservation_id)
+        .join(Reservation, Reservation.id == Stay.reservation_id)
         .where(
+            Reservation.property_id == property_id,
             Folio.status == "open",
             Stay.status == "checked_in",
             Stay.check_in <= business_date,

@@ -18,6 +18,7 @@ from app.financial_models import PaymentRefund
 from app.ledger import post_transaction
 from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Role, Room, RoomType, User
 from app.pms_core import Stay  # noqa: F401
+from tenant_test_support import ensure_test_property
 
 
 class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
@@ -30,9 +31,10 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
         suffix = uuid4().hex[:10]
         business_date = date.today()
         with Session(engine) as db:
-            state = db.get(BusinessDateState, 1)
+            property_ = ensure_test_property(db)
+            state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
             if state is None:
-                db.add(BusinessDateState(id=1, current_business_date=business_date, opened_at=datetime.utcnow()))
+                db.add(BusinessDateState(property_id=property_.id, current_business_date=business_date, opened_at=datetime.utcnow()))
             else:
                 state.current_business_date = business_date
                 state.last_closed_at = None
@@ -42,12 +44,12 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
                 db.add(role)
                 db.flush()
             user = User(username=f"b2-{suffix}", password_hash="test", role_id=role.id)
-            guest = Guest(full_name=f"B2 Concurrency {suffix}")
-            room_type = RoomType(name=f"B2 {suffix}", base_rate=100)
+            guest = Guest(property_id=property_.id, full_name=f"B2 Concurrency {suffix}")
+            room_type = RoomType(property_id=property_.id, name=f"B2 {suffix}", base_rate=100)
             db.add_all([user, guest, room_type])
             db.flush()
-            room = Room(number=f"B{suffix[:7]}", room_type_id=room_type.id, status="occupied")
-            reservation = Reservation(guest_id=guest.id, check_in=business_date, check_out=business_date + timedelta(days=2), status="checked_in")
+            room = Room(property_id=property_.id, number=f"B{suffix[:7]}", room_type_id=room_type.id, status="occupied")
+            reservation = Reservation(property_id=property_.id, guest_id=guest.id, check_in=business_date, check_out=business_date + timedelta(days=2), status="checked_in")
             db.add_all([room, reservation])
             db.flush()
             db.add(ReservationRoom(reservation_id=reservation.id, room_id=room.id))
@@ -59,7 +61,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
             if charge_amount:
                 post_transaction(
                     db, transaction_type="folio_charge", description=f"B2 test charge {suffix}", reference_type="test_charge", reference_id=suffix,
-                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id,
+                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id, property_id=property_.id,
                     lines=[
                         {"account": "Guest Receivables", "direction": "debit", "amount": Decimal(charge_amount), "folio_id": folio.id},
                         {"account": "Revenue - Test", "direction": "credit", "amount": Decimal(charge_amount), "folio_id": folio.id},

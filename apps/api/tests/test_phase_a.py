@@ -4,6 +4,7 @@ from datetime import date
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 from app.models import BusinessDateState, DepositTransaction, Guest, Room, RoomType, StayOccupant, StayRateSegment, User
 from app.pms_core import Stay
@@ -19,15 +20,16 @@ class PhaseADomainTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
-        role_guest = Guest(full_name="Booking Guest")
-        occupant_guest = Guest(full_name="Occupant Guest")
+        self.property = ensure_test_property(self.db)
+        role_guest = Guest(property_id=self.property.id, full_name="Booking Guest")
+        occupant_guest = Guest(property_id=self.property.id, full_name="Occupant Guest")
         self.db.add_all([role_guest, occupant_guest])
         self.db.flush()
-        room_type = RoomType(name="Standard", base_rate=100)
+        room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add(room_type); self.db.flush()
-        room = Room(number="101", room_type_id=room_type.id, status="available")
+        room = Room(property_id=self.property.id, number="101", room_type_id=room_type.id, status="available")
         self.db.add(room); self.db.flush()
-        reservation = Reservation(guest_id=role_guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="reserved")
+        reservation = Reservation(property_id=self.property.id, guest_id=role_guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="reserved")
         self.db.add(reservation); self.db.flush()
         stay = Stay(reservation_id=reservation.id, room_id=room.id, guest_id=role_guest.id, status="reserved", check_in=reservation.check_in, check_out=reservation.check_out, agreed_rate=100, discount_percent=10, discount_amount=10, payment_due_policy="at_checkout", deposit_required=180, deposit_received=0)
         self.db.add(stay); self.db.flush()
@@ -68,7 +70,7 @@ class PhaseADomainTests(unittest.TestCase):
         self.assertEqual(balance, 60)
 
     def test_business_date_state_exists_as_singleton_capable_table(self):
-        state = BusinessDateState(id=1, current_business_date=date(2026, 9, 8))
+        state = BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8))
         self.db.add(state); self.db.commit()
         self.assertEqual(self.db.get(BusinessDateState, 1).current_business_date, date(2026, 9, 8))
 

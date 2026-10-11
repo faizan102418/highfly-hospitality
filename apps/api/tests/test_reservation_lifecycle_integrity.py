@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import engine
 from app.models import Guest, Reservation
+from tenant_test_support import ensure_test_property
 
 
 class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
@@ -17,10 +18,11 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
 
     def test_reservation_status_transitions_are_constrained(self):
         with Session(engine) as db:
-            guest = Guest(full_name="Lifecycle Test Guest")
+            property_ = ensure_test_property(db)
+            guest = Guest(property_id=property_.id, full_name="Lifecycle Test Guest")
             db.add(guest)
             db.flush()
-            reservation = Reservation(
+            reservation = Reservation(property_id=property_.id,
                 guest_id=guest.id,
                 check_in=date(2026, 9, 10),
                 check_out=date(2026, 9, 12),
@@ -33,6 +35,7 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
             db.commit()
 
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             reservation = db.get(Reservation, reservation_id)
             self.assertIsNotNone(reservation)
             reservation.status = "checked_in"
@@ -54,10 +57,11 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
 
     def test_terminal_reservation_status_cannot_be_reopened(self):
         with Session(engine) as db:
-            guest = Guest(full_name="Terminal Lifecycle Test Guest")
+            property_ = ensure_test_property(db)
+            guest = Guest(property_id=property_.id, full_name="Terminal Lifecycle Test Guest")
             db.add(guest)
             db.flush()
-            reservation = Reservation(
+            reservation = Reservation(property_id=property_.id, 
                 guest_id=guest.id,
                 check_in=date(2026, 9, 10),
                 check_out=date(2026, 9, 12),
@@ -71,6 +75,7 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
             guest_id = guest.id
 
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             reservation = db.get(Reservation, reservation_id)
             reservation.status = "checked_in"
             with self.assertRaises(DBAPIError):
@@ -82,11 +87,13 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
 
     def test_reservation_dates_must_be_valid(self):
         with Session(engine) as db:
-            guest = Guest(full_name="Date Constraint Test Guest")
+            property_ = ensure_test_property(db)
+            guest = Guest(property_id=property_.id, full_name="Date Constraint Test Guest")
             db.add(guest)
             db.flush()
             db.add(
-                Reservation(
+                Reservation(property_id=property_.id, 
+                    property_id=property_.id,
                     guest_id=guest.id,
                     check_in=date(2026, 9, 12),
                     check_out=date(2026, 9, 12),

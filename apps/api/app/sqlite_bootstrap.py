@@ -1,7 +1,3 @@
-from datetime import date, datetime
-
-from sqlalchemy import select
-
 from .db import Base, IS_SQLITE, SessionLocal, engine, ensure_schema_compatibility
 
 
@@ -36,18 +32,3 @@ def initialize_sqlite_database() -> None:
     # Apply compatibility fixes for databases created by older local builds.
     ensure_schema_compatibility()
 
-    from .models import BusinessDateState
-
-    with SessionLocal() as db:
-        state = db.scalar(select(BusinessDateState).where(BusinessDateState.id == 1))
-        if state is None:
-            now = datetime.utcnow()
-            db.add(
-                BusinessDateState(
-                    id=1,
-                    current_business_date=date.today(),
-                    opened_at=now,
-                    updated_at=now,
-                )
-            )
-            db.commit()

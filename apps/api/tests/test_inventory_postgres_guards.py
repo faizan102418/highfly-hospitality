@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import engine
 from app.inventory import stock_operations
 from app.models import BusinessDateState, Role, StockItem, StockMovement, User
+from tenant_test_support import ensure_test_property
 
 
 class InventoryPostgreSQLGuardTests(unittest.TestCase):
@@ -23,21 +24,20 @@ class InventoryPostgreSQLGuardTests(unittest.TestCase):
         self.assertIn("stock_movements", names)
 
     def _ensure_state_and_role(self, db):
-        state = db.get(BusinessDateState, 1)
-        if state is None:
-            state = BusinessDateState(id=1, current_business_date=date(2026, 9, 9))
-            db.add(state)
+        property_ = ensure_test_property(db)
+        state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
         role = db.scalar(select(Role).where(Role.name == "admin"))
         if role is None:
             role = Role(name="admin")
             db.add(role)
         db.flush()
-        return state, role
+        return state, role, property_
 
     def test_business_date_guard_rejects_stale_inventory_operation(self):
         with Session(engine) as db:
-            state, role = self._ensure_state_and_role(db)
-            stock = StockItem(sku="CI-F-GUARD-" + str(id(self)), name="CI F Guard " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
+            property_ = ensure_test_property(db)
+            state, role, property_ = self._ensure_state_and_role(db)
+            stock = StockItem(property_id=property_.id, sku="CI-F-GUARD-" + str(id(self)), name="CI F Guard " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
             user = User(username="ci-f-guard-1-" + str(id(self)), password_hash="test", role_id=role.id)
             db.add_all([stock, user])
             db.flush()
@@ -59,7 +59,7 @@ class InventoryPostgreSQLGuardTests(unittest.TestCase):
     def test_stock_movement_is_immutable(self):
         with Session(engine) as db:
             state, role = self._ensure_state_and_role(db)
-            stock = StockItem(sku="CI-F-GUARD-STOCK-" + str(id(self)), name="CI F Guard Stock " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
+            stock = StockItem(property_id=property_.id, sku="CI-F-GUARD-STOCK-" + str(id(self)), name="CI F Guard Stock " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
             user = User(username="ci-f-guard-user-" + str(id(self)), password_hash="test", role_id=role.id)
             db.add_all([stock, user])
             db.flush()

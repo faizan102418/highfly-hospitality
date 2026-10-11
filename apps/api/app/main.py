@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
@@ -7,11 +8,13 @@ from sqlalchemy.orm import Session
 
 from .auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
 from .billing import router as billing_router
+from .configuration import router as configuration_router
 from .backup import router as backup_router
 from .db import engine, get_db
 from .expenses import router as expenses_router
 from .inventory import router as inventory_router
-from .models import AuditLog, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, User
+from .models import AuditLog, BusinessDateState, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, User
+from .financial_models import InvoiceSequence
 from .purchasing import router as purchasing_router
 from .phase_a_workflows import router as phase_a_workflows_router
 from .pms_core_bootstrap import ensure_pms_core_schema
@@ -20,6 +23,7 @@ from .restaurant_pos import router as restaurant_pos_router
 from .reports import router as reports_router
 from .business_date import get_current_business_date
 from .sqlite_bootstrap import initialize_sqlite_database
+from .tenancy import resolve_authorized_property
 from .schemas import (
     AvailabilityResponse, BootstrapAdminRequest, CheckInResponse, CheckOutResponse,
     DashboardResponse, FrontDeskResponse, GuestCreate, GuestResponse, HealthResponse,
@@ -30,6 +34,7 @@ from .schemas import (
 
 app = FastAPI(title="La Serene HMS API", version="0.9.1")
 app.include_router(billing_router)
+app.include_router(configuration_router)
 app.include_router(backup_router)
 app.include_router(expenses_router)
 app.include_router(reports_router, prefix="/api")
@@ -40,8 +45,12 @@ app.include_router(purchasing_router)
 app.include_router(restaurant_pos_router)
 
 
-def write_audit(db: Session, action: str, entity_type: str, entity_id: int | None = None, details: dict | None = None, user_id: int | None = None):
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id) if entity_id is not None else None, details=json.dumps(details) if details else None))
+def write_audit(db: Session, action: str, entity_type: str, entity_id: int | None = None, details: dict | None = None, user_id: int | None = None, property_id: int | None = None):
+    if property_id is None and user_id is not None:
+        property_id = resolve_authorized_property(db, user_id).id
+    if property_id is None:
+        raise HTTPException(status_code=409, detail="An authorized property is required for audit logging")
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id) if entity_id is not None else None, details=json.dumps(details) if details else None))
 
 
 def reservation_overlaps(room_id: int, check_in: date, check_out: date, db: Session, exclude_reservation_id: int | None = None) -> bool:
@@ -79,17 +88,6 @@ def initialize_database():
                 db.add(Role(name=name))
         db.commit()
     ensure_pms_core_schema()
-    from .tenancy import Organization, Property, PropertyUserAccess
-    with Session(engine) as db:
-        organization = db.scalar(select(Organization).where(Organization.slug == "highfly-hospitality"))
-        if organization is None:
-            organization = Organization(name="HighFly Hospitality", slug="highfly-hospitality")
-            db.add(organization); db.flush()
-        property_ = db.scalar(select(Property).where(Property.organization_id == organization.id, Property.slug == "la-serene"))
-        if property_ is None:
-            property_ = Property(organization_id=organization.id, name="La Serene Hotel & Resort", code="LA-SERENE", slug="la-serene")
-            db.add(property_); db.flush()
-        db.commit()
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -112,16 +110,22 @@ def bootstrap_admin(payload: BootstrapAdminRequest, db: Session = Depends(get_db
     user = User(username=payload.username, password_hash=hash_password(payload.password), role_id=role.id)
     db.add(user); db.flush()
     from .tenancy import Organization, Property, PropertyUserAccess
-    property_ = db.scalar(select(Property).where(Property.slug == "la-serene"))
+    organization = db.scalar(select(Organization).where(Organization.slug == payload.organization_slug))
+    if organization is None:
+        organization = Organization(name=payload.organization_name.strip(), slug=payload.organization_slug)
+        db.add(organization); db.flush()
+    elif organization.name != payload.organization_name.strip():
+        raise HTTPException(status_code=409, detail="Organization slug already exists with a different name")
+    property_ = db.scalar(select(Property).where(Property.organization_id == organization.id, Property.slug == payload.property_slug))
     if property_ is None:
-        organization = db.scalar(select(Organization).where(Organization.slug == "highfly-hospitality"))
-        if organization is None:
-            organization = Organization(name="HighFly Hospitality", slug="highfly-hospitality")
-            db.add(organization); db.flush()
-        property_ = Property(organization_id=organization.id, name="La Serene Hotel & Resort", code="LA-SERENE", slug="la-serene")
+        property_ = Property(organization_id=organization.id, name=payload.property_name.strip(), code=payload.property_code, slug=payload.property_slug, timezone=payload.timezone, currency=payload.currency.upper())
         db.add(property_); db.flush()
+    elif property_.name != payload.property_name.strip() or property_.code != payload.property_code or property_.timezone != payload.timezone or property_.currency != payload.currency.upper():
+        raise HTTPException(status_code=409, detail="Property slug already exists with different configuration")
     db.add(PropertyUserAccess(user_id=user.id, property_id=property_.id, access_scope="organization", is_primary=True))
-    write_audit(db, "bootstrap", "user", user.id, {"username": user.username, "role": role.name, "property_id": property_.id}, user.id)
+    business_date = datetime.now(ZoneInfo(property_.timezone)).date()
+    db.add(BusinessDateState(property_id=property_.id, current_business_date=business_date))
+    db.add(InvoiceSequence(property_id=property_.id, last_number=0))
     db.commit()
     return MeResponse(id=user.id, username=user.username, role=role.name)
 
@@ -147,36 +151,40 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
 
 
 @app.get("/api/dashboard", response_model=DashboardResponse)
-def dashboard(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    today = get_current_business_date(db, fallback_to_today=True); statuses = ("available", "reserved", "occupied", "dirty", "out_of_order")
+def dashboard(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    property_ = resolve_authorized_property(db, user.id)
+    today = get_current_business_date(db, property_id=property_.id, fallback_to_today=True); statuses = ("available", "reserved", "occupied", "dirty", "out_of_order")
     counts = {name: 0 for name in statuses}
-    for room_status, count in db.execute(select(Room.status, func.count(Room.id)).group_by(Room.status)):
+    for room_status, count in db.execute(select(Room.status, func.count(Room.id)).where(Room.property_id == property_.id).group_by(Room.status)):
         if room_status in counts: counts[room_status] = count
-    arrivals = db.scalar(select(func.count(Reservation.id)).where(Reservation.check_in == today, Reservation.status == "reserved")) or 0
-    departures = db.scalar(select(func.count(Reservation.id)).where(Reservation.check_out == today, Reservation.status == "checked_in")) or 0
-    in_house = db.scalar(select(func.count(Reservation.id)).where(Reservation.status == "checked_in")) or 0
+    arrivals = db.scalar(select(func.count(Reservation.id)).where(Reservation.property_id == property_.id, Reservation.check_in == today, Reservation.status == "reserved")) or 0
+    departures = db.scalar(select(func.count(Reservation.id)).where(Reservation.property_id == property_.id, Reservation.check_out == today, Reservation.status == "checked_in")) or 0
+    in_house = db.scalar(select(func.count(Reservation.id)).where(Reservation.property_id == property_.id, Reservation.status == "checked_in")) or 0
     return DashboardResponse(business_date=today, total_rooms=sum(counts.values()), available_rooms=counts["available"], reserved_rooms=counts["reserved"], occupied_rooms=counts["occupied"], dirty_rooms=counts["dirty"], out_of_order_rooms=counts["out_of_order"], arrivals_today=arrivals, departures_today=departures, in_house_guests=in_house)
 
 
 @app.get("/api/room-types", response_model=list[RoomTypeResponse])
-def list_room_types(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    return db.scalars(select(RoomType).order_by(RoomType.name)).all()
+def list_room_types(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    property_ = resolve_authorized_property(db, user.id)
+    return db.scalars(select(RoomType).where(RoomType.property_id == property_.id).order_by(RoomType.name)).all()
 
 
 @app.post("/api/room-types", response_model=RoomTypeResponse, status_code=201)
 def create_room_type(payload: RoomTypeCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    if db.scalar(select(RoomType).where(RoomType.name == payload.name)):
+    property_ = resolve_authorized_property(db, user.id)
+    if db.scalar(select(RoomType).where(RoomType.property_id == property_.id, RoomType.name == payload.name)):
         raise HTTPException(status_code=409, detail="Room type already exists")
-    room_type = RoomType(**payload.model_dump()); db.add(room_type); db.flush()
+    room_type = RoomType(property_id=property_.id, **payload.model_dump()); db.add(room_type); db.flush()
     write_audit(db, "create", "room_type", room_type.id, {"name": room_type.name, "base_rate": str(room_type.base_rate)}, user.id)
     db.commit(); db.refresh(room_type); return room_type
 
 
 @app.patch("/api/room-types/{room_type_id}", response_model=RoomTypeResponse)
 def update_room_type(room_type_id: int, payload: RoomTypeUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    room_type = db.get(RoomType, room_type_id)
+    property_ = resolve_authorized_property(db, user.id)
+    room_type = db.scalar(select(RoomType).where(RoomType.id == room_type_id, RoomType.property_id == property_.id))
     if not room_type: raise HTTPException(status_code=404, detail="Room type not found")
-    if db.scalar(select(RoomType).where(RoomType.name == payload.name, RoomType.id != room_type_id)):
+    if db.scalar(select(RoomType).where(RoomType.property_id == property_.id, RoomType.name == payload.name, RoomType.id != room_type_id)):
         raise HTTPException(status_code=409, detail="Room type already exists")
     old = {"name": room_type.name, "base_rate": str(room_type.base_rate), "description": room_type.description}
     room_type.name = payload.name; room_type.base_rate = payload.base_rate; room_type.description = payload.description
@@ -185,25 +193,28 @@ def update_room_type(room_type_id: int, payload: RoomTypeUpdate, db: Session = D
 
 
 @app.get("/api/rooms", response_model=list[RoomResponse])
-def list_rooms(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    return db.scalars(select(Room).order_by(Room.number)).all()
+def list_rooms(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    property_ = resolve_authorized_property(db, user.id)
+    return db.scalars(select(Room).where(Room.property_id == property_.id).order_by(Room.number)).all()
 
 
 @app.post("/api/rooms", response_model=RoomResponse, status_code=201)
 def create_room(payload: RoomCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    if not db.get(RoomType, payload.room_type_id): raise HTTPException(status_code=400, detail="Room type does not exist")
-    if db.scalar(select(Room).where(Room.number == payload.number)): raise HTTPException(status_code=409, detail="Room number already exists")
-    room = Room(**payload.model_dump()); db.add(room); db.flush()
+    property_ = resolve_authorized_property(db, user.id)
+    if not db.scalar(select(RoomType).where(RoomType.id == payload.room_type_id, RoomType.property_id == property_.id)): raise HTTPException(status_code=400, detail="Room type does not exist")
+    if db.scalar(select(Room).where(Room.property_id == property_.id, Room.number == payload.number)): raise HTTPException(status_code=409, detail="Room number already exists")
+    room = Room(property_id=property_.id, **payload.model_dump()); db.add(room); db.flush()
     write_audit(db, "create", "room", room.id, {"number": room.number, "room_type_id": room.room_type_id}, user.id)
     db.commit(); db.refresh(room); return room
 
 
 @app.patch("/api/rooms/{room_id}", response_model=RoomResponse)
 def update_room(room_id: int, payload: RoomUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    room = db.get(Room, room_id)
+    property_ = resolve_authorized_property(db, user.id)
+    room = db.scalar(select(Room).where(Room.id == room_id, Room.property_id == property_.id))
     if not room: raise HTTPException(status_code=404, detail="Room not found")
-    if not db.get(RoomType, payload.room_type_id): raise HTTPException(status_code=400, detail="Room type does not exist")
-    if db.scalar(select(Room).where(Room.number == payload.number, Room.id != room_id)): raise HTTPException(status_code=409, detail="Room number already exists")
+    if not db.scalar(select(RoomType).where(RoomType.id == payload.room_type_id, RoomType.property_id == property_.id)): raise HTTPException(status_code=400, detail="Room type does not exist")
+    if db.scalar(select(Room).where(Room.property_id == property_.id, Room.number == payload.number, Room.id != room_id)): raise HTTPException(status_code=409, detail="Room number already exists")
     old = {"number": room.number, "room_type_id": room.room_type_id}
     room.number = payload.number; room.room_type_id = payload.room_type_id
     write_audit(db, "update", "room", room.id, {"from": old, "to": payload.model_dump()}, user.id)
@@ -212,7 +223,8 @@ def update_room(room_id: int, payload: RoomUpdate, db: Session = Depends(get_db)
 
 @app.patch("/api/rooms/{room_id}/status", response_model=RoomResponse)
 def update_room_status(room_id: int, payload: RoomStatusUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    room = db.get(Room, room_id)
+    property_ = resolve_authorized_property(db, user.id)
+    room = db.scalar(select(Room).where(Room.id == room_id, Room.property_id == property_.id))
     if not room: raise HTTPException(status_code=404, detail="Room not found")
     if room.status == "reserved" and payload.status == "available":
         active = db.scalar(select(ReservationRoom.reservation_id).where(ReservationRoom.room_id == room.id).join(Reservation, Reservation.id == ReservationRoom.reservation_id).where(Reservation.status == "reserved").limit(1))
@@ -275,7 +287,8 @@ def list_guests(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    stmt = select(Guest)
+    property_ = resolve_authorized_property(db, _.id)
+    stmt = select(Guest).where(Guest.property_id == property_.id)
     if q:
         pattern = f"%{q.strip()}%"
         stmt = stmt.where((Guest.full_name.ilike(pattern)) | (Guest.phone.ilike(pattern)) | (Guest.email.ilike(pattern)))
@@ -290,8 +303,9 @@ def guest_directory(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    base = select(Guest)
-    count_stmt = select(func.count(Guest.id))
+    property_ = resolve_authorized_property(db, _.id)
+    base = select(Guest).where(Guest.property_id == property_.id)
+    count_stmt = select(func.count(Guest.id)).where(Guest.property_id == property_.id)
     if q:
         pattern = f"%{q.strip()}%"
         condition = (
@@ -324,21 +338,24 @@ def guest_duplicate_check(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    property_ = resolve_authorized_property(db, _.id)
     payload = GuestCreate(full_name="Duplicate check", phone=phone, id_document=id_document)
-    return _guest_duplicate_matches(db, payload, exclude_guest_id=exclude_guest_id)
+    return [g for g in _guest_duplicate_matches(db, payload, exclude_guest_id=exclude_guest_id) if g.property_id == property_.id]
 
 
 @app.post("/api/guests", response_model=GuestResponse, status_code=201)
 def create_guest(payload: GuestCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    _raise_guest_duplicate_warning(_guest_duplicate_matches(db, payload))
-    guest = Guest(**payload.model_dump()); db.add(guest); db.flush()
+    property_ = resolve_authorized_property(db, user.id)
+    _raise_guest_duplicate_warning([g for g in _guest_duplicate_matches(db, payload) if g.property_id == property_.id])
+    guest = Guest(property_id=property_.id, **payload.model_dump()); db.add(guest); db.flush()
     write_audit(db, "create", "guest", guest.id, {"full_name": guest.full_name}, user.id)
     db.commit(); db.refresh(guest); return guest
 
 
 @app.patch("/api/guests/{guest_id}", response_model=GuestResponse)
 def update_guest(guest_id: int, payload: GuestCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    guest = db.get(Guest, guest_id)
+    property_ = resolve_authorized_property(db, user.id)
+    guest = db.scalar(select(Guest).where(Guest.id == guest_id, Guest.property_id == property_.id))
     if not guest:
         raise HTTPException(status_code=404, detail="Guest not found")
     _raise_guest_duplicate_warning(_guest_duplicate_matches(db, payload, exclude_guest_id=guest_id))
@@ -360,16 +377,18 @@ def update_guest(guest_id: int, payload: GuestCreate, db: Session = Depends(get_
 
 
 @app.get("/api/availability", response_model=AvailabilityResponse)
-def availability(check_in: date, check_out: date, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def availability(check_in: date, check_out: date, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    property_ = resolve_authorized_property(db, user.id)
     if check_out <= check_in: raise HTTPException(status_code=400, detail="Check-out must be after check-in")
-    rooms = db.scalars(select(Room).where(Room.status.not_in(("dirty", "out_of_order"))).order_by(Room.number)).all()
+    rooms = db.scalars(select(Room).where(Room.property_id == property_.id, Room.status.not_in(("dirty", "out_of_order"))).order_by(Room.number)).all()
     available = [room for room in rooms if not reservation_overlaps(room.id, check_in, check_out, db)]
     return AvailabilityResponse(check_in=check_in, check_out=check_out, rooms=available)
 
 
 @app.get("/api/reservations", response_model=list[ReservationListResponse])
-def list_reservations(status_filter: str | None = Query(default=None, alias="status"), from_date: date | None = None, to_date: date | None = None, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    stmt = select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id)
+def list_reservations(status_filter: str | None = Query(default=None, alias="status"), from_date: date | None = None, to_date: date | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    property_ = resolve_authorized_property(db, user.id)
+    stmt = select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id)
     if status_filter: stmt = stmt.where(Reservation.status == status_filter)
     if from_date: stmt = stmt.where(Reservation.check_out > from_date)
     if to_date: stmt = stmt.where(Reservation.check_in < to_date)
@@ -378,25 +397,27 @@ def list_reservations(status_filter: str | None = Query(default=None, alias="sta
 
 
 @app.get("/api/front-desk", response_model=FrontDeskResponse)
-def front_desk(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    today = get_current_business_date(db, fallback_to_today=True)
-    arrivals = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.check_in == today, Reservation.status == "reserved").order_by(Reservation.id)).all()
-    departures = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.check_out == today, Reservation.status == "checked_in").order_by(Reservation.id)).all()
-    in_house = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.status == "checked_in").order_by(Reservation.check_out, Reservation.id)).all()
+def front_desk(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    property_ = resolve_authorized_property(db, user.id)
+    today = get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
+    arrivals = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.check_in == today, Reservation.status == "reserved").order_by(Reservation.id)).all()
+    departures = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.check_out == today, Reservation.status == "checked_in").order_by(Reservation.id)).all()
+    in_house = db.execute(select(Reservation, Guest.full_name).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.status == "checked_in").order_by(Reservation.check_out, Reservation.id)).all()
     return FrontDeskResponse(arrivals=[reservation_list_item(db, r, g) for r, g in arrivals], departures=[reservation_list_item(db, r, g) for r, g in departures], in_house=[reservation_list_item(db, r, g) for r, g in in_house])
 
 
 @app.post("/api/reservations", response_model=ReservationResponse, status_code=201)
 def create_reservation(payload: ReservationCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
     if payload.check_out <= payload.check_in: raise HTTPException(status_code=400, detail="Check-out must be after check-in")
-    if not db.get(Guest, payload.guest_id): raise HTTPException(status_code=400, detail="Guest does not exist")
+    if not db.scalar(select(Guest).where(Guest.id == payload.guest_id, Guest.property_id == property_.id)): raise HTTPException(status_code=400, detail="Guest does not exist")
     if len(set(payload.room_ids)) != len(payload.room_ids): raise HTTPException(status_code=400, detail="Duplicate room IDs are not allowed")
-    rooms = [db.get(Room, rid) for rid in payload.room_ids]
+    rooms = [db.scalar(select(Room).where(Room.id == rid, Room.property_id == property_.id)) for rid in payload.room_ids]
     if any(room is None for room in rooms): raise HTTPException(status_code=400, detail="One or more rooms do not exist")
     if any(room.status in ("dirty", "out_of_order") for room in rooms): raise HTTPException(status_code=409, detail="One or more rooms are not operationally bookable")
     conflicts = [room.number for room in rooms if reservation_overlaps(room.id, payload.check_in, payload.check_out, db)]
     if conflicts: raise HTTPException(status_code=409, detail=f"Room(s) unavailable for selected dates: {', '.join(conflicts)}")
-    reservation = Reservation(guest_id=payload.guest_id, check_in=payload.check_in, check_out=payload.check_out, notes=payload.notes)
+    reservation = Reservation(property_id=property_.id, guest_id=payload.guest_id, check_in=payload.check_in, check_out=payload.check_out, notes=payload.notes)
     db.add(reservation); db.flush()
     for room in rooms:
         db.add(ReservationRoom(reservation_id=reservation.id, room_id=room.id))
@@ -408,12 +429,13 @@ def create_reservation(payload: ReservationCreate, db: Session = Depends(get_db)
 
 @app.post("/api/reservations/{reservation_id}/check-in", response_model=CheckInResponse)
 def check_in_reservation(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "reserved": raise HTTPException(status_code=409, detail="Reservation is not awaiting check-in")
     if reservation.check_in > date.today(): raise HTTPException(status_code=409, detail="Reservation check-in date is in the future")
     room_ids = db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()
-    rooms = [db.get(Room, rid) for rid in room_ids]
+    rooms = [db.scalar(select(Room).where(Room.id == rid, Room.property_id == property_.id)) for rid in room_ids]
     if not rooms or any(room is None for room in rooms): raise HTTPException(status_code=409, detail="Reservation has an invalid room assignment")
     blocked = [room.number for room in rooms if room.status in ("dirty", "out_of_order", "occupied")]
     if blocked: raise HTTPException(status_code=409, detail=f"Assigned room(s) cannot be checked in: {', '.join(blocked)}")
@@ -435,7 +457,8 @@ def check_in_reservation(reservation_id: int, db: Session = Depends(get_db), use
 
 @app.post("/api/reservations/{reservation_id}/check-out", response_model=CheckOutResponse)
 def check_out_reservation(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "checked_in": raise HTTPException(status_code=409, detail="Reservation is not checked in")
     room_ids = db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()
@@ -455,11 +478,12 @@ def check_out_reservation(reservation_id: int, db: Session = Depends(get_db), us
 
 @app.post("/api/reservations/{reservation_id}/transfer", response_model=ReservationResponse)
 def transfer_room(reservation_id: int, payload: RoomTransferRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
     if payload.from_room_id == payload.to_room_id: raise HTTPException(status_code=400, detail="Source and destination rooms must be different")
-    reservation = db.get(Reservation, reservation_id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "checked_in": raise HTTPException(status_code=409, detail="Room transfer requires a checked-in reservation")
-    source = db.get(Room, payload.from_room_id); target = db.get(Room, payload.to_room_id)
+    source = db.scalar(select(Room).where(Room.id == payload.from_room_id, Room.property_id == property_.id)); target = db.scalar(select(Room).where(Room.id == payload.to_room_id, Room.property_id == property_.id))
     if not source or not target: raise HTTPException(status_code=404, detail="Source or destination room not found")
     link = db.scalar(select(ReservationRoom).where(ReservationRoom.reservation_id == reservation.id, ReservationRoom.room_id == source.id))
     if not link: raise HTTPException(status_code=409, detail="Source room is not assigned to this reservation")

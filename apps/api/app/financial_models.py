@@ -30,7 +30,8 @@ class FolioItemWindow(Base):
 
 class InvoiceSequence(Base):
     __tablename__ = "invoice_sequences"
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, unique=True, index=True)
     last_number: Mapped[int] = mapped_column(default=0)
 
 

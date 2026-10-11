@@ -11,6 +11,7 @@ from .db import get_db
 from .financial_authority import folio_ledger_summary
 from .financial_ops import ledger_reconciliation
 from .models import BusinessDateState, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Room, User
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 MONEY = Decimal("0.01")
@@ -144,13 +145,14 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
 
 
 @router.get("/summary")
-def report_summary(from_date: date | None = Query(default=None), to_date: date | None = Query(default=None), db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    period_start = from_date or get_current_business_date(db, fallback_to_today=True)
+def report_summary(from_date: date | None = Query(default=None), to_date: date | None = Query(default=None), db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    period_start = from_date or get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
     period_end_exclusive = (to_date + timedelta(days=1)) if to_date else (period_start + timedelta(days=1))
     if period_end_exclusive <= period_start: raise HTTPException(status_code=400, detail="to_date must be on or after from_date")
     period_days = (period_end_exclusive - period_start).days
-    total_rooms = db.scalar(select(func.count(Room.id))) or 0; operational_rooms = db.scalar(select(func.count(Room.id)).where(Room.status != "out_of_order")) or 0
-    reservations = db.scalars(select(Reservation).where(Reservation.check_in < period_end_exclusive, Reservation.check_out > period_start, Reservation.status.in_(ACTIVE_STATUSES))).all()
+    total_rooms = db.scalar(select(func.count(Room.id)).where(Room.property_id == property_.id)) or 0; operational_rooms = db.scalar(select(func.count(Room.id)).where(Room.property_id == property_.id, Room.status != "out_of_order")) or 0
+    reservations = db.scalars(select(Reservation).where(Reservation.property_id == property_.id, Reservation.check_in < period_end_exclusive, Reservation.check_out > period_start, Reservation.status.in_(ACTIVE_STATUSES))).all()
     room_count_by_reservation = {rid: int(count) for rid, count in db.execute(select(ReservationRoom.reservation_id, func.count(ReservationRoom.room_id)).group_by(ReservationRoom.reservation_id))}
     booked_room_nights = occupied_room_nights = scheduled_arrivals = scheduled_departures = actual_check_ins = actual_check_outs = completed_stays = stays_overlapping_period = legacy_lifecycle_records = 0
     for reservation in reservations:
@@ -174,11 +176,12 @@ def report_summary(from_date: date | None = Query(default=None), to_date: date |
     return {"from_date": period_start, "to_date": period_end_exclusive - timedelta(days=1), "period_days": period_days, "rooms": {"total": total_rooms, "operational": operational_rooms, "available_room_nights": available_room_nights, "booked_room_nights": booked_room_nights, "occupied_room_nights": occupied_room_nights, "occupancy_rate": occupancy_rate}, "operations": {"scheduled_arrivals": scheduled_arrivals, "scheduled_departures": scheduled_departures, "actual_check_ins": actual_check_ins, "actual_check_outs": actual_check_outs, "checked_in_guests": sum(1 for reservation in reservations if reservation.status == "checked_in"), "completed_stays": completed_stays, "stays_overlapping_period": stays_overlapping_period, "legacy_lifecycle_records": legacy_lifecycle_records}, "revenue": {"gross": float(financial["gross"]), "discounts": float(financial["discounts"]), "net": float(financial["net"]), "payments_received": float(financial["payments_received"]), "payments_refunded": float(financial["payments_refunded"]), "payments_net": float(financial["payments_net"]), "outstanding_balance": float(financial["outstanding_balance"]), "period_outstanding_balance": float(financial["period_outstanding_balance"]), "financial_source": financial["financial_source"]}, "payment_breakdown": financial["payment_breakdown"], "revenue_accounts": financial["revenue_accounts"], "top_guests": top_guests}
 
 
-def _revenue_by_account_prefix(db: Session, business_date: date, prefix: str) -> Decimal:
+def _revenue_by_account_prefix(db: Session, business_date: date, prefix: str, property_id: int) -> Decimal:
     rows = db.execute(
         select(LedgerEntry.account, LedgerEntry.direction, func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date == business_date,
             FinancialTransaction.status == "posted",
             LedgerEntry.account.like(prefix + "%"),
@@ -192,19 +195,21 @@ def _revenue_by_account_prefix(db: Session, business_date: date, prefix: str) ->
     return money(max(Decimal("0.00"), balance))
 
 
-def management_report(db: Session):
+def management_report(db: Session, user: User):
     """Return management KPIs from authoritative business-date and ledger sources."""
-    business_date = get_current_business_date(db, fallback_to_today=True)
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = get_current_business_date(db, property_id=property_.id, fallback_to_today=True)
     day_end = business_date + timedelta(days=1)
 
-    total_rooms = int(db.scalar(select(func.count(Room.id))) or 0)
-    active_out_of_order = int(db.scalar(select(func.count(Room.id)).where(Room.status == "out_of_order")) or 0)
+    total_rooms = int(db.scalar(select(func.count(Room.id)).where(Room.property_id == property_.id)) or 0)
+    active_out_of_order = int(db.scalar(select(func.count(Room.id)).where(Room.property_id == property_.id, Room.status == "out_of_order")) or 0)
     available_room_nights = max(0, total_rooms - active_out_of_order)
 
     reservation_rows = db.execute(
         select(Reservation.id, Reservation.status, Reservation.check_in, Reservation.check_out, Reservation.checked_in_at, Reservation.checked_out_at, ReservationRoom.room_id)
         .join(ReservationRoom, ReservationRoom.reservation_id == Reservation.id)
         .where(
+            Reservation.property_id == property_.id,
             Reservation.check_in < day_end,
             Reservation.check_out > business_date,
             Reservation.status.in_(ACTIVE_STATUSES),
@@ -234,18 +239,18 @@ def management_report(db: Session):
             occupied_room_nights += overlap_nights(check_in, check_out, business_date, day_end)
     checked_in_guests = len(seen_in_house)
 
-    room_revenue = _revenue_by_account_prefix(db, business_date, "Revenue - room")
-    total_revenue = _revenue_by_account_prefix(db, business_date, "Revenue -")
+    room_revenue = _revenue_by_account_prefix(db, business_date, "Revenue - room", property_.id)
+    total_revenue = _revenue_by_account_prefix(db, business_date, "Revenue -", property_.id)
     adr = money(room_revenue / Decimal(occupied_room_nights)) if occupied_room_nights else Decimal("0.00")
     revpar = money(room_revenue / Decimal(available_room_nights)) if available_room_nights else Decimal("0.00")
 
-    finance = ledger_reconciliation(business_date, db, None)
+    finance = ledger_reconciliation(business_date, db, user)
     ar_total = Decimal("0.00")
-    for folio_id in db.scalars(select(Folio.id)):
+    for folio_id in db.scalars(select(Folio.id).join(Reservation, Reservation.id == Folio.reservation_id).where(Reservation.property_id == property_.id)):
         ar_total += folio_ledger_summary(db, folio_id).balance
     ar_total = money(ar_total)
 
-    state = db.get(BusinessDateState, 1)
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
     return {
         "business_date": business_date,
         "rooms": {
@@ -278,5 +283,5 @@ def management_report(db: Session):
 
 
 @router.get("/management")
-def management_report_route(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    return management_report(db)
+def management_report_route(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    return management_report(db, user)

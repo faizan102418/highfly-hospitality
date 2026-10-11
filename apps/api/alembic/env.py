@@ -8,6 +8,7 @@ from app.db import Base
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401 - registers legacy/core PMS tables on metadata
 import app.phase_a_completion  # noqa: F401 - registers Phase A routing table
+import app.tenancy  # noqa: F401 - registers organization/property tables
 
 config = context.config
 

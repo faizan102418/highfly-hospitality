@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -23,7 +24,8 @@ class FinancialAuthorityTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
+        self.property = ensure_test_property(self.db)
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
         self.db.add(Folio(id=1, reservation_id=1, status="open"))
         self.db.commit()
 

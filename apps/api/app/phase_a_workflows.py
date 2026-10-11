@@ -72,7 +72,18 @@ class ReservationSplitRequest(BaseModel):
 
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    if entity_type == "reservation":
+        property_id = db.scalar(select(Reservation.property_id).where(Reservation.id == entity_id))
+    else:
+        stay_id = details.get("stay_id") or details.get("source_stay_id") or (entity_id if entity_type == "stay" else None)
+        if entity_type == "stay_occupant" and not stay_id:
+            stay_id = db.scalar(select(StayOccupant.stay_id).where(StayOccupant.id == entity_id))
+        if entity_type == "deposit_transaction" and not stay_id:
+            stay_id = db.scalar(select(DepositTransaction.stay_id).where(DepositTransaction.id == entity_id))
+        property_id = db.scalar(select(Reservation.property_id).join(Stay, Stay.reservation_id == Reservation.id).where(Stay.id == stay_id)) if stay_id else None
+    if property_id is None:
+        raise HTTPException(status_code=409, detail="Cannot audit workflow action without property context")
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def stay_or_404(db: Session, stay_id: int) -> Stay:
@@ -300,6 +311,7 @@ def split_reservation(reservation_id: int, payload: ReservationSplitRequest, db:
         raise HTTPException(status_code=400, detail="Split date must be inside every selected room stay")
 
     new_reservation = Reservation(
+        property_id=source.property_id,
         guest_id=source.guest_id,
         check_in=payload.to_date,
         check_out=source.check_out,

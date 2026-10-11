@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .business_date import get_current_business_date, lock_current_business_date
 from .db import get_db
-from .models import FinancialTransaction, LedgerEntry, User
+from .models import FinancialTransaction, Folio, LedgerEntry, Reservation, User
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/ledger", tags=["ledger"])
 MONEY = Decimal("0.01")
@@ -96,7 +97,47 @@ def post_transaction(
     reversal_of_id: int | None = None,
     idempotency_key: str | None = None,
     allow_historical_business_date: bool = False,
+    property_id: int | None = None,
 ) -> FinancialTransaction:
+    # Derive ownership from authoritative linked records and reject mixed-property references.
+    referenced_property_ids: set[int] = set()
+    if folio_id is not None:
+        folio = db.get(Folio, folio_id)
+        if folio is None:
+            raise ValueError("Folio does not exist")
+        folio_reservation = db.get(Reservation, folio.reservation_id)
+        if folio_reservation is None:
+            raise ValueError("Folio reservation does not exist")
+        referenced_property_ids.add(folio_reservation.property_id)
+        if reservation_id is not None and folio.reservation_id != reservation_id:
+            raise ValueError("Folio and reservation references do not match")
+    if reservation_id is not None:
+        reservation = db.get(Reservation, reservation_id)
+        if reservation is None:
+            raise ValueError("Reservation does not exist")
+        referenced_property_ids.add(reservation.property_id)
+    if reversal_of_id is not None:
+        original = db.get(FinancialTransaction, reversal_of_id)
+        if original is None:
+            raise ValueError("Original transaction does not exist")
+        referenced_property_ids.add(original.property_id)
+    if len(referenced_property_ids) > 1:
+        raise ValueError("Folio, reservation, and reversal references must belong to the same property")
+    referenced_property_id = next(iter(referenced_property_ids), None)
+    if property_id is not None and referenced_property_id is not None and property_id != referenced_property_id:
+        raise ValueError("Selected property does not match the linked financial records")
+    property_id = referenced_property_id or property_id
+    if property_id is None:
+        raise ValueError("A property is required for a financial transaction")
+    for raw in lines:
+        line = raw.model_dump() if isinstance(raw, LedgerLine) else dict(raw)
+        line_folio_id = line.get("folio_id")
+        if line_folio_id is not None:
+            line_folio = db.get(Folio, line_folio_id)
+            line_reservation = db.get(Reservation, line_folio.reservation_id) if line_folio is not None else None
+            if line_reservation is None or line_reservation.property_id != property_id:
+                raise ValueError("Ledger line folio must belong to the transaction property")
+
     key = normalize_idempotency_key(idempotency_key)
     if len(lines) < 2:
         raise ValueError("A financial transaction requires at least two ledger lines")
@@ -157,7 +198,7 @@ def post_transaction(
                 raise ValueError("Idempotency key is already bound to a different financial transaction")
             return existing
 
-    state = lock_current_business_date(db)
+    state = lock_current_business_date(db, property_id=property_id)
     tx_date = business_date or state.current_business_date
     if business_date is not None and tx_date != state.current_business_date:
         if not allow_historical_business_date or tx_date > state.current_business_date:
@@ -166,6 +207,7 @@ def post_transaction(
         raise ValueError(f"Business date {tx_date.isoformat()} is closed for financial posting")
 
     transaction = FinancialTransaction(
+        property_id=property_id,
         transaction_no=new_transaction_no(tx_date),
         idempotency_key=key,
         idempotency_fingerprint=fingerprint if key else None,
@@ -276,8 +318,9 @@ def reverse_transaction(db: Session, *, transaction_id: int, created_by: int, re
 
 
 @router.get("/transactions")
-def list_transactions(limit: int = 100, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    limit = max(1, min(limit, 500)); transactions = db.scalars(select(FinancialTransaction).order_by(FinancialTransaction.id.desc()).limit(limit)).all(); result = []
+def list_transactions(limit: int = 100, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    limit = max(1, min(limit, 500)); transactions = db.scalars(select(FinancialTransaction).where(FinancialTransaction.property_id == property_.id).order_by(FinancialTransaction.id.desc()).limit(limit)).all(); result = []
     for tx in transactions:
         entries = db.scalars(select(LedgerEntry).where(LedgerEntry.transaction_id == tx.id).order_by(LedgerEntry.id)).all()
         result.append({"id": tx.id, "transaction_no": tx.transaction_no, "idempotency_key": tx.idempotency_key, "business_date": tx.business_date, "transaction_type": tx.transaction_type, "status": tx.status, "reference_type": tx.reference_type, "reference_id": tx.reference_id, "folio_id": tx.folio_id, "reservation_id": tx.reservation_id, "description": tx.description, "created_by": tx.created_by, "created_at": tx.created_at, "reversal_of_id": tx.reversal_of_id, "entries": [{"id": e.id, "account": e.account, "direction": e.direction, "amount": e.amount, "currency": e.currency, "folio_id": e.folio_id, "stay_id": e.stay_id, "payment_method": e.payment_method, "reference": e.reference} for e in entries]})
@@ -286,8 +329,9 @@ def list_transactions(limit: int = 100, db: Session = Depends(get_db), _: User =
 
 @router.post("/transactions", status_code=201)
 def create_ledger_transaction(payload: LedgerTransactionCreate, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    property_ = resolve_authorized_property(db, user.id)
     try:
-        tx = post_transaction(db, transaction_type=payload.transaction_type, description=payload.description, lines=payload.lines, created_by=user.id, reference_type=payload.reference_type, reference_id=payload.reference_id, folio_id=payload.folio_id, reservation_id=payload.reservation_id, idempotency_key=idempotency_key)
+        tx = post_transaction(db, transaction_type=payload.transaction_type, description=payload.description, lines=payload.lines, created_by=user.id, reference_type=payload.reference_type, reference_id=payload.reference_id, folio_id=payload.folio_id, reservation_id=payload.reservation_id, idempotency_key=idempotency_key, property_id=property_.id)
         db.commit()
         db.refresh(tx)
         return {"id": tx.id, "transaction_no": tx.transaction_no, "status": tx.status}

@@ -4,6 +4,8 @@ from datetime import date
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
+from app.tenancy import PropertyUserAccess
 from app.db import Base
 from app.models import Guest, Role, Room, RoomType, StayRateSegment, User, Reservation
 from app.pms_core import Stay
@@ -19,15 +21,16 @@ class RateSegmentReplacementTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
 
         role = Role(name="admin")
-        guest = Guest(full_name="Rate Test Guest")
-        room_type = RoomType(name="Standard", base_rate=100)
+        guest = Guest(property_id=self.property.id, full_name="Rate Test Guest")
+        room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([role, guest, room_type])
         self.db.flush()
 
-        room = Room(number="101", room_type_id=room_type.id, status="available")
-        reservation = Reservation(guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 13), status="reserved")
+        room = Room(property_id=self.property.id, number="101", room_type_id=room_type.id, status="available")
+        reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 13), status="reserved")
         self.db.add_all([room, reservation])
         self.db.flush()
 
@@ -48,6 +51,7 @@ class RateSegmentReplacementTests(unittest.TestCase):
         user = User(username="admin", password_hash="test", role_id=role.id)
         self.db.add_all([self.stay, user])
         self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=user.id, property_id=self.property.id, access_scope="property", is_primary=True))
         self.user = user
 
         self.db.add(

@@ -6,6 +6,7 @@ import tempfile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -13,6 +14,7 @@ import app.pms_core  # noqa: F401
 from app.finance_controls import payment_reconciliation, revenue_report, trial_balance
 from app.night_audit import build_json, build_summary
 from app.models import BusinessDateState, Role, User
+from app.tenancy import PropertyUserAccess
 
 
 class NightAuditPackTests(unittest.TestCase):
@@ -24,12 +26,15 @@ class NightAuditPackTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name="admin")
         self.db.add(role)
         self.db.flush()
         self.user = User(username="admin", password_hash="test", role_id=role.id)
         self.db.add(self.user)
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
+        self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=self.user.id, property_id=self.property.id, access_scope="property", is_primary=True))
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
         self.db.commit()
 
     def tearDown(self):
@@ -37,7 +42,7 @@ class NightAuditPackTests(unittest.TestCase):
         self.db.close()
 
     def test_financial_pack_contains_trial_balance_payment_and_revenue_sections(self):
-        summary = build_summary(self.db, date(2026, 9, 8))
+        summary = build_summary(self.db, date(2026, 9, 8), property_id=self.property.id)
         finance = summary["finance"]
         self.assertIn("trial_balance", finance)
         self.assertIn("payment_reconciliation", finance)
@@ -49,7 +54,7 @@ class NightAuditPackTests(unittest.TestCase):
         self.assertEqual(finance["revenue_reconciliation"]["difference"], 0)
 
     def test_closing_json_embeds_finance_controls(self):
-        summary = build_summary(self.db, date(2026, 9, 8))
+        summary = build_summary(self.db, date(2026, 9, 8), property_id=self.property.id)
         with tempfile.TemporaryDirectory() as tmp:
             path = build_json(Path(tmp), summary, "no variance", self.user.username, datetime.utcnow())
             text = path.read_text(encoding="utf-8")
@@ -58,9 +63,9 @@ class NightAuditPackTests(unittest.TestCase):
             self.assertIn("revenue_reconciliation", text)
 
     def test_underlying_finance_reports_match_empty_period(self):
-        self.assertTrue(trial_balance(date(2026, 9, 8), self.db, None)["balanced"])
-        self.assertEqual(payment_reconciliation(date(2026, 9, 8), self.db, None)["net_total"], 0)
-        self.assertEqual(revenue_report(date(2026, 9, 8), self.db, None)["total"], 0)
+        self.assertTrue(trial_balance(date(2026, 9, 8), self.db, None, property_id=self.property.id)["balanced"])
+        self.assertEqual(payment_reconciliation(date(2026, 9, 8), self.db, None, property_id=self.property.id)["net_total"], 0)
+        self.assertEqual(revenue_report(date(2026, 9, 8), self.db, None, property_id=self.property.id)["total"], 0)
 
 
 if __name__ == "__main__":

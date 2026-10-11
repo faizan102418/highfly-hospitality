@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -30,6 +31,7 @@ from app.models import (
     User,
 )
 from app.pms_core import Stay
+from app.tenancy import PropertyUserAccess
 
 
 class FinancialControlsRegressionTests(unittest.TestCase):
@@ -42,25 +44,27 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
 
+        self.property = ensure_test_property(self.db)
         role = Role(name="admin")
         self.db.add(role)
         self.db.flush()
         self.user = User(username="admin", password_hash="test", role_id=role.id)
-        guest_a = Guest(full_name="Primary Guest")
-        guest_b = Guest(full_name="Second Guest")
-        room_type = RoomType(name="Standard", base_rate=100)
+        guest_a = Guest(property_id=self.property.id, full_name="Primary Guest")
+        guest_b = Guest(property_id=self.property.id, full_name="Second Guest")
+        room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([self.user, guest_a, guest_b, room_type])
         self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=self.user.id, property_id=self.property.id, access_scope="property", is_primary=True))
 
-        room_a = Room(number="201", room_type_id=room_type.id, status="occupied")
-        room_b = Room(number="202", room_type_id=room_type.id, status="occupied")
-        res_a = Reservation(
+        room_a = Room(property_id=self.property.id, number="201", room_type_id=room_type.id, status="occupied")
+        room_b = Room(property_id=self.property.id, number="202", room_type_id=room_type.id, status="occupied")
+        res_a = Reservation(property_id=self.property.id, 
             guest_id=guest_a.id,
             check_in=date(2026, 9, 8),
             check_out=date(2026, 9, 10),
             status="checked_in",
         )
-        res_b = Reservation(
+        res_b = Reservation(property_id=self.property.id, 
             guest_id=guest_b.id,
             check_in=date(2026, 9, 8),
             check_out=date(2026, 9, 10),
@@ -97,13 +101,12 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         payment = Payment(folio_id=folio_a.id, amount=100, method="cash")
         self.db.add_all([item_a, item_b, payment])
         self.db.add(
-            BusinessDateState(
-                id=1,
+            BusinessDateState(property_id=self.property.id,
                 current_business_date=date(2026, 9, 8),
                 opened_at=datetime(2026, 9, 8, 8, 0),
             )
         )
-        self.db.add(InvoiceSequence(id=1, last_number=0))
+        self.db.add(InvoiceSequence(property_id=self.property.id, last_number=0))
         self.db.commit()
 
         # Seed authoritative ledger state for the legacy regression fixture.

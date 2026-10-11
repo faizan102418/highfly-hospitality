@@ -23,6 +23,7 @@ from .housekeeping_control import (
 from . import housekeeping_hooks  # noqa: F401 - installs transactional dirty-room hook
 from .inventory import lock_business_date
 from .models import AuditLog, Reservation, ReservationRoom, Room, RoomType, User
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="", tags=["housekeeping"])
 router.include_router(pms_core_router)
@@ -30,11 +31,13 @@ router.include_router(housekeeping_control_router)
 
 
 @router.get("/housekeeping")
-def housekeeping_board(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    business_date = lock_business_date(db)
+def housekeeping_board(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
     rows = db.execute(
         select(Room, RoomType.name)
         .join(RoomType, RoomType.id == Room.room_type_id)
+        .where(Room.property_id == property_.id, RoomType.property_id == property_.id)
         .order_by(Room.number)
     ).all()
 
@@ -76,7 +79,8 @@ def housekeeping_board(db: Session = Depends(get_db), _: User = Depends(require_
 
 @router.post("/housekeeping/rooms/{room_id}/clean")
 def mark_room_clean(room_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "housekeeping"))):
-    business_date = lock_business_date(db)
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
     room = require_room(db, room_id)
     if room.status != "dirty":
         raise HTTPException(status_code=409, detail=f"Room {room.number} is not awaiting cleaning")
@@ -93,7 +97,7 @@ def mark_room_clean(room_id: int, db: Session = Depends(get_db), user: User = De
     now = datetime.utcnow()
     room.status = "available"
     db.execute(update(housekeeping_tasks).where(housekeeping_tasks.c.id == task["id"]).values(status="completed", completed_at=now, completed_by=user.id, updated_at=now))
-    db.add(AuditLog(user_id=user.id, action="housekeeping_clean", entity_type="room", entity_id=str(room.id), details=json.dumps({"room_number": room.number, "task_id": task["id"], "from": "dirty", "to": "available"})))
+    db.add(AuditLog(property_id=property_.id, user_id=user.id, action="housekeeping_clean", entity_type="room", entity_id=str(room.id), details=json.dumps({"room_number": room.number, "task_id": task["id"], "from": "dirty", "to": "available"})))
     db.commit()
     return {"room_id": room.id, "room_number": room.number, "status": room.status, "task_id": task["id"], "business_date": business_date}
 

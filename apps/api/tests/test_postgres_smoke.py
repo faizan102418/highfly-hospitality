@@ -12,6 +12,7 @@ from app.db import engine
 from app.pms_core import Stay  # noqa: F401
 from app.ledger import post_transaction, reverse_transaction
 from app.models import BusinessDateState, FinancialTransaction, LedgerEntry
+from tenant_test_support import ensure_test_property
 
 
 class PostgreSQLSmokeTest(unittest.TestCase):
@@ -31,16 +32,13 @@ class PostgreSQLSmokeTest(unittest.TestCase):
 
     def test_ledger_transaction_is_balanced_and_persistent(self):
         with Session(engine) as db:
-            state = db.get(BusinessDateState, 1)
-            if state is None:
-                state = BusinessDateState(id=1, current_business_date=date(2026, 9, 8))
-                db.add(state)
-                db.flush()
+            property_ = ensure_test_property(db)
             tx = post_transaction(
                 db,
                 transaction_type="ci_smoke",
                 description="CI PostgreSQL ledger smoke test",
                 created_by=None,
+                property_id=property_.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("10.00")},
                     {"account": "Test Revenue", "direction": "credit", "amount": Decimal("10.00")},
@@ -59,11 +57,13 @@ class PostgreSQLSmokeTest(unittest.TestCase):
 
     def test_postgresql_rejects_unbalanced_ledger_transaction(self):
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             tx = post_transaction(
                 db,
                 transaction_type="ci_balance_guard",
                 description="CI PostgreSQL ledger balance guard test",
                 created_by=None,
+                property_id=property_.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("11.00")},
                     {"account": "Test Revenue", "direction": "credit", "amount": Decimal("11.00")},
@@ -91,6 +91,7 @@ class PostgreSQLSmokeTest(unittest.TestCase):
                 transaction_type="ci_currency_guard",
                 description="CI PostgreSQL ledger currency guard test",
                 created_by=None,
+                property_id=property_.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("12.00")},
                     {"account": "Test Revenue", "direction": "credit", "amount": Decimal("12.00")},
@@ -118,6 +119,7 @@ class PostgreSQLSmokeTest(unittest.TestCase):
                 transaction_type="ci_immutability",
                 description="CI PostgreSQL ledger immutability test",
                 created_by=None,
+                property_id=property_.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("7.00")},
                     {"account": "Test Revenue", "direction": "credit", "amount": Decimal("7.00")},
@@ -145,6 +147,7 @@ class PostgreSQLSmokeTest(unittest.TestCase):
                 transaction_type="ci_reversal",
                 description="CI PostgreSQL reversal test",
                 created_by=None,
+                property_id=property_.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("5.00")},
                     {"account": "Test Revenue", "direction": "credit", "amount": Decimal("5.00")},

@@ -36,6 +36,13 @@ class MeResponse(BaseModel):
 class BootstrapAdminRequest(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=8, max_length=255)
+    organization_name: str = Field(min_length=1, max_length=160)
+    organization_slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", min_length=1, max_length=120)
+    property_name: str = Field(min_length=1, max_length=160)
+    property_code: str = Field(pattern=r"^[A-Za-z0-9_-]{1,60}$")
+    property_slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", min_length=1, max_length=120)
+    timezone: str = Field(default="UTC", min_length=1, max_length=80)
+    currency: str = Field(default="USD", pattern=r"^[A-Za-z]{3}$")
 
 
 class RoomTypeCreate(BaseModel):

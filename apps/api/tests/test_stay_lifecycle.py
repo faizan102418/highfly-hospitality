@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.pms_core import Stay
@@ -31,22 +32,23 @@ class StayLifecycleTests(unittest.TestCase):
 
     def setUp(self):
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name=f"reception-{id(self)}")
         self.db.add(role)
-        guest = Guest(full_name="Booking Guest")
-        occupant = Guest(full_name="Room Occupant")
+        guest = Guest(property_id=self.property.id, full_name="Booking Guest")
+        occupant = Guest(property_id=self.property.id, full_name="Room Occupant")
         self.db.add_all([guest, occupant])
         self.db.flush()
         user = User(username=f"reception-{id(self)}", password_hash="test", role_id=role.id)
         self.db.add(user)
-        room_type = RoomType(name=f"Standard-{guest.id}", base_rate=100)
+        room_type = RoomType(property_id=self.property.id, name=f"Standard-{guest.id}", base_rate=100)
         self.db.add(room_type)
         self.db.flush()
-        room_a = Room(number=f"A-{guest.id}", room_type_id=room_type.id, status="reserved")
-        room_b = Room(number=f"B-{guest.id}", room_type_id=room_type.id, status="available")
+        room_a = Room(property_id=self.property.id, number=f"A-{guest.id}", room_type_id=room_type.id, status="reserved")
+        room_b = Room(property_id=self.property.id, number=f"B-{guest.id}", room_type_id=room_type.id, status="available")
         self.db.add_all([room_a, room_b])
         self.db.flush()
-        reservation = Reservation(guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
+        reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
         self.db.add(reservation)
         self.db.flush()
         folio = Folio(reservation_id=reservation.id, status="open")

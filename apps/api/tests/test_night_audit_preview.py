@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -25,15 +26,16 @@ class NightAuditPreviewTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
 
+        self.property = ensure_test_property(self.db)
         role = Role(id=1, name="admin")
         user = User(id=1, username="admin", password_hash="test", role_id=1)
-        room_type = RoomType(id=1, name="Standard", base_rate=Decimal("10000.00"))
-        room = Room(id=1, number="101", room_type_id=1, status="occupied")
-        guest = Guest(id=1, full_name="Test Guest")
-        reservation = Reservation(id=1, guest_id=1, check_in=date(2026, 9, 13), check_out=date(2026, 9, 15), status="checked_in")
+        room_type = RoomType(property_id=self.property.id, id=1, name="Standard", base_rate=Decimal("10000.00"))
+        room = Room(property_id=self.property.id, id=1, number="101", room_type_id=1, status="occupied")
+        guest = Guest(property_id=self.property.id, id=1, full_name="Test Guest")
+        reservation = Reservation(property_id=self.property.id, id=1, guest_id=1, check_in=date(2026, 9, 13), check_out=date(2026, 9, 15), status="checked_in")
         folio = Folio(id=1, reservation_id=1, status="open")
         stay = Stay(id=1, reservation_id=1, room_id=1, guest_id=1, status="checked_in", check_in=date(2026, 9, 13), check_out=date(2026, 9, 15), agreed_rate=Decimal("10000.00"), payment_due_policy="at_checkout")
-        state = BusinessDateState(id=1, current_business_date=date(2026, 9, 13), opened_at=datetime.utcnow())
+        state = BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 13), opened_at=datetime.utcnow())
         self.db.add_all([role, user, room_type, room, guest, reservation, folio, stay, state])
         self.db.commit()
 
@@ -70,8 +72,8 @@ class NightAuditPreviewTests(unittest.TestCase):
         )
 
         before_items = self.db.scalar(select(FolioItem.id))
-        summary = build_summary(self.db, date(2026, 9, 13))
-        preview = build_pre_close_preview(self.db, date(2026, 9, 13), summary)
+        summary = build_summary(self.db, date(2026, 9, 13), property_id=self.property.id)
+        preview = build_pre_close_preview(self.db, date(2026, 9, 13), summary, property_id=self.property.id)
 
         self.assertEqual(preview["opening"]["cash"], Decimal("0.00"))
         self.assertEqual(preview["opening"]["guest_receivables"], Decimal("20000.00"))
@@ -106,7 +108,7 @@ class NightAuditPreviewTests(unittest.TestCase):
         ])
         self.db.commit()
 
-        summary = build_summary(self.db, date(2026, 9, 13))
+        summary = build_summary(self.db, date(2026, 9, 13), property_id=self.property.id)
 
         self.assertEqual(summary["revenue"]["gross"], Decimal("0.00"))
         self.assertEqual(summary["payments"]["cash"], Decimal("25000.00"))
@@ -116,8 +118,8 @@ class NightAuditPreviewTests(unittest.TestCase):
         stay = self.db.get(Stay, 1)
         stay.check_out = date(2026, 9, 13)
         self.db.commit()
-        summary = build_summary(self.db, date(2026, 9, 13))
-        preview = build_pre_close_preview(self.db, date(2026, 9, 13), summary)
+        summary = build_summary(self.db, date(2026, 9, 13), property_id=self.property.id)
+        preview = build_pre_close_preview(self.db, date(2026, 9, 13), summary, property_id=self.property.id)
         self.assertEqual(preview["pending_night_audit"]["room_charges_count"], 0)
         self.assertEqual(preview["pending_night_audit"]["room_charges_total"], Decimal("0.00"))
 

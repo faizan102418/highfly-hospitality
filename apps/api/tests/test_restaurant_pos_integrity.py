@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 from app.models import (
     BusinessDateState,
@@ -31,16 +32,17 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         self.today = date(2026, 9, 9)
-        self.db.add(BusinessDateState(id=1, current_business_date=self.today))
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=self.today))
         role = Role(name="admin")
         self.db.add(role)
         self.db.flush()
         self.user = User(username="admin", password_hash="test", role_id=role.id)
-        guest = Guest(full_name="POS Guest")
+        guest = Guest(property_id=self.property.id, full_name="POS Guest")
         self.db.add_all([self.user, guest])
         self.db.flush()
-        reservation = Reservation(guest_id=guest.id, check_in=self.today, check_out=date(2026, 9, 10), status="checked_in")
+        reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=self.today, check_out=date(2026, 9, 10), status="checked_in")
         self.db.add(reservation)
         self.db.flush()
         folio = Folio(reservation_id=reservation.id, status="open")
@@ -74,7 +76,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         return order, menu
 
     def test_post_is_atomic_when_stock_is_insufficient(self):
-        stock = StockItem(sku="CHICKEN", name="Chicken", unit="kg", on_hand=Decimal("1.000"))
+        stock = StockItem(property_id=self.property.id, sku="CHICKEN", name="Chicken", unit="kg", on_hand=Decimal("1.000"))
         self.db.add(stock)
         self.db.flush()
         order, _ = self._make_order(order_no="POS-TEST-1", price=Decimal("1000.00"), quantity=Decimal("20"), stock=stock)
@@ -87,7 +89,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         self.assertIsNone(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.folio_id == self.folio_id)))
 
     def test_posting_creates_folio_charges_service_charge_and_stock_movement(self):
-        stock = StockItem(sku="COFFEE", name="Coffee", unit="kg", on_hand=Decimal("5.000"))
+        stock = StockItem(property_id=self.property.id, sku="COFFEE", name="Coffee", unit="kg", on_hand=Decimal("5.000"))
         self.db.add(stock)
         self.db.flush()
         order, _ = self._make_order(order_no="POS-TEST-2", price=Decimal("500.00"), quantity=Decimal("2"), stock=stock)
@@ -130,7 +132,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
 
     def test_void_posted_order_reverses_finance_and_restores_stock(self):
-        stock = StockItem(sku="TEA", name="Tea", unit="kg", on_hand=Decimal("2.000"))
+        stock = StockItem(property_id=self.property.id, sku="TEA", name="Tea", unit="kg", on_hand=Decimal("2.000"))
         self.db.add(stock)
         self.db.flush()
         order, _ = self._make_order(order_no="POS-TEST-6", price=Decimal("200.00"), quantity=Decimal("1"), stock=stock)

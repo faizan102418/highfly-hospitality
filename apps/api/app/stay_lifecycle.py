@@ -73,7 +73,22 @@ def get_stay(db: Session, stay_id: int) -> Stay:
 
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    if entity_type == "folio_item":
+        property_id = db.scalar(select(Reservation.property_id).join(Folio, Folio.reservation_id == Reservation.id).join(FolioItem, FolioItem.folio_id == Folio.id).where(FolioItem.id == entity_id))
+    elif entity_type == "stay_folio_window":
+        stay_id = details.get("stay_id") or db.scalar(select(StayFolioWindow.stay_id).where(StayFolioWindow.id == entity_id))
+        property_id = db.scalar(select(Reservation.property_id).join(Stay, Stay.reservation_id == Reservation.id).where(Stay.id == stay_id)) if stay_id else None
+    elif entity_type == "deposit_transaction":
+        stay_id = details.get("stay_id") or db.scalar(select(DepositTransaction.stay_id).where(DepositTransaction.id == entity_id))
+        property_id = db.scalar(select(Reservation.property_id).join(Stay, Stay.reservation_id == Reservation.id).where(Stay.id == stay_id)) if stay_id else None
+    else:
+        stay_id = details.get("stay_id") or (entity_id if entity_type == "stay" else None)
+        if entity_type == "stay_occupant" and not stay_id:
+            stay_id = db.scalar(select(StayOccupant.stay_id).where(StayOccupant.id == entity_id))
+        property_id = db.scalar(select(Reservation.property_id).join(Stay, Stay.reservation_id == Reservation.id).where(Stay.id == stay_id)) if stay_id else None
+    if property_id is None:
+        raise HTTPException(status_code=409, detail="Cannot audit lifecycle action without property context")
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def room_conflict(db: Session, room_id: int, check_in: date, check_out: date, exclude_stay_id: int | None = None) -> bool:

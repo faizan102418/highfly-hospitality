@@ -17,6 +17,7 @@ from .financial_models import FolioItemWindow, Invoice, InvoiceSequence, Payment
 from .ledger import post_deposit_received, post_transaction
 from .models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Room, User
 from .pms_core import FolioWindow, Stay
+from .tenancy import Property, resolve_authorized_property
 
 router = APIRouter(prefix="", tags=["financial-operations"])
 MONEY = Decimal("0.01")
@@ -98,7 +99,8 @@ def payment_refunded_amount(db: Session, payment_id: int) -> Decimal:
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
     import json
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    property_id = resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def _refund_response(db: Session, folio: Folio, refund: PaymentRefund, replayed: bool) -> dict:
@@ -185,31 +187,41 @@ def transfer_item_to_window(folio_id: int, window_id: int, payload: WindowTransf
 
 
 @router.get("/folios/{folio_id}/invoice")
-def get_invoice(folio_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    invoice = db.scalar(select(Invoice).where(Invoice.folio_id == folio_id))
+def get_invoice(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    invoice = db.scalar(select(Invoice).join(Folio, Folio.id == Invoice.folio_id).join(Reservation, Reservation.id == Folio.reservation_id).where(Invoice.folio_id == folio_id, Reservation.property_id == property_.id))
     if not invoice: raise HTTPException(status_code=404, detail="Invoice not found")
     return {"id": invoice.id, "invoice_no": invoice.invoice_no, "folio_id": invoice.folio_id, "reservation_id": invoice.reservation_id, "business_date": invoice.business_date, "total": invoice.total, "currency": invoice.currency, "status": invoice.status, "issued_at": invoice.issued_at}
 
 
 @router.post("/folios/{folio_id}/invoice", status_code=201)
 def issue_invoice(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = db.get(Folio, folio_id)
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id))
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     existing = db.scalar(select(Invoice).where(Invoice.folio_id == folio_id))
     if existing: return {"id": existing.id, "invoice_no": existing.invoice_no, "folio_id": existing.folio_id, "reservation_id": existing.reservation_id, "business_date": existing.business_date, "total": existing.total, "currency": existing.currency, "status": existing.status, "issued_at": existing.issued_at}
     if folio.status != "closed": raise HTTPException(status_code=409, detail="Invoice can only be issued for a closed folio")
     total, _, balance = folio_balance(db, folio)
     if balance != Decimal("0.00"): raise HTTPException(status_code=409, detail=f"Cannot issue invoice with outstanding balance of {balance}")
-    state = db.get(BusinessDateState, 1); business_date = state.current_business_date if state else date.today(); sequence = db.scalar(select(InvoiceSequence).where(InvoiceSequence.id == 1).with_for_update())
-    if sequence is None: sequence = InvoiceSequence(id=1, last_number=0); db.add(sequence); db.flush()
-    sequence.last_number += 1; invoice = Invoice(invoice_no=f"INV-{business_date.year}-{sequence.last_number:06d}", folio_id=folio.id, reservation_id=folio.reservation_id, business_date=business_date, total=total, currency="PKR", status="issued", issued_by=user.id); db.add(invoice); db.flush(); audit(db, user.id, "issue", "invoice", invoice.id, {"invoice_no": invoice.invoice_no, "folio_id": folio_id, "total": str(total)}); db.commit(); db.refresh(invoice)
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id).with_for_update())
+    if state is None: raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
+    business_date = state.current_business_date
+    sequence = db.scalar(select(InvoiceSequence).where(InvoiceSequence.property_id == property_.id).with_for_update())
+    if sequence is None: raise HTTPException(status_code=503, detail="Invoice sequence is not initialized for this property")
+    sequence.last_number += 1; invoice = Invoice(invoice_no=f"INV-{property_.code}-{business_date.year}-{sequence.last_number:06d}", folio_id=folio.id, reservation_id=folio.reservation_id, business_date=business_date, total=total, currency="PKR", status="issued", issued_by=user.id); db.add(invoice); db.flush(); audit(db, user.id, "issue", "invoice", invoice.id, {"invoice_no": invoice.invoice_no, "folio_id": folio_id, "total": str(total)}); db.commit(); db.refresh(invoice)
     return {"id": invoice.id, "invoice_no": invoice.invoice_no, "folio_id": folio.id, "reservation_id": invoice.reservation_id, "business_date": invoice.business_date, "total": invoice.total, "currency": invoice.currency, "status": invoice.status, "issued_at": invoice.issued_at}
 
 
 @router.get("/ledger/reconciliation")
-def ledger_reconciliation(business_date: date | None = None, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    state = db.get(BusinessDateState, 1); target_date = business_date or (state.current_business_date if state else date.today())
-    transactions = db.scalars(select(FinancialTransaction).where(FinancialTransaction.business_date == target_date, FinancialTransaction.status == "posted")).all(); transaction_ids = [tx.id for tx in transactions]
+def ledger_reconciliation(business_date: date | None = None, db: Session = Depends(get_db), user: User | None = Depends(require_roles("admin", "reception")), *, property_id: int | None = None):
+    property_ = resolve_authorized_property(db, user.id) if user is not None else db.get(Property, property_id)
+    if property_ is None:
+        raise HTTPException(status_code=503, detail="An authorized property is required for ledger reconciliation")
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
+    if state is None: raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
+    target_date = business_date or state.current_business_date
+    transactions = db.scalars(select(FinancialTransaction).where(FinancialTransaction.property_id == property_.id, FinancialTransaction.business_date == target_date, FinancialTransaction.status == "posted")).all(); transaction_ids = [tx.id for tx in transactions]
     entry_rows = db.scalars(select(LedgerEntry).where(LedgerEntry.transaction_id.in_(transaction_ids))).all() if transaction_ids else []; tx_types = {tx.id: tx.transaction_type for tx in transactions}
     operational_revenue_types = {"folio_charge", "folio_discount", "service_charge", "folio_payment", "deposit_applied", "payment_refund"}
     debits = money(sum((e.amount for e in entry_rows if e.direction == "debit"), Decimal("0.00"))); credits = money(sum((e.amount for e in entry_rows if e.direction == "credit"), Decimal("0.00")))
@@ -306,8 +318,9 @@ def night_audit_reconciliation(db: Session = Depends(get_db), user: User = Depen
 
 @router.post("/night-audit/business-date/close")
 def close_business_date(db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    state = db.get(BusinessDateState, 1)
-    if state is None: state = BusinessDateState(id=1, current_business_date=date.today(), opened_at=datetime.utcnow()); db.add(state); db.flush()
+    property_ = resolve_authorized_property(db, user.id)
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id).with_for_update())
+    if state is None: raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
     report = ledger_reconciliation(state.current_business_date, db, user)
     if report["reconciliation"]["status"] != "balanced": raise HTTPException(status_code=409, detail={"message": "Ledger reconciliation requires review before business date can close", "reconciliation": report})
     closed_date = state.current_business_date; now = datetime.utcnow(); state.last_closed_at = now; state.current_business_date = closed_date + timedelta(days=1); state.opened_at = now; audit(db, user.id, "business_date_close", "business_date", str(closed_date), {"closed_at": now.isoformat(), "next_business_date": str(state.current_business_date)}); db.commit(); db.refresh(state)

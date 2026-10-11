@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
@@ -36,6 +37,7 @@ class PhaseACompletionTests(unittest.TestCase):
 
     def setUp(self):
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name=f"phase-a-{id(self)}")
         self.db.add(role)
         self.db.flush()
@@ -43,16 +45,16 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.add(self.user)
         self.db.flush()
 
-        guests = [Guest(full_name="Booking Guest"), Guest(full_name="Ahmed"), Guest(full_name="Bilal"), Guest(full_name="Usman")]
+        guests = [Guest(property_id=self.property.id, full_name="Booking Guest"), Guest(property_id=self.property.id, full_name="Ahmed"), Guest(property_id=self.property.id, full_name="Bilal"), Guest(property_id=self.property.id, full_name="Usman")]
         self.db.add_all(guests)
         self.db.flush()
-        room_type = RoomType(name=f"PhaseRoom-{id(self)}", base_rate=150)
+        room_type = RoomType(property_id=self.property.id, name=f"PhaseRoom-{id(self)}", base_rate=150)
         self.db.add(room_type)
         self.db.flush()
-        rooms = [Room(number=f"PA-{id(self)}-101", room_type_id=room_type.id, status="reserved"), Room(number=f"PA-{id(self)}-102", room_type_id=room_type.id, status="occupied"), Room(number=f"PA-{id(self)}-103", room_type_id=room_type.id, status="available")]
+        rooms = [Room(property_id=self.property.id, number=f"PA-{id(self)}-101", room_type_id=room_type.id, status="reserved"), Room(property_id=self.property.id, number=f"PA-{id(self)}-102", room_type_id=room_type.id, status="occupied"), Room(property_id=self.property.id, number=f"PA-{id(self)}-103", room_type_id=room_type.id, status="available")]
         self.db.add_all(rooms)
         self.db.flush()
-        reservation = Reservation(guest_id=guests[0].id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
+        reservation = Reservation(property_id=self.property.id, guest_id=guests[0].id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
         self.db.add(reservation)
         self.db.flush()
         folio = Folio(reservation_id=reservation.id, status="open")
@@ -68,7 +70,7 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.add(DepositTransaction(stay_id=stay.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id))
         business_date_state = self.db.get(BusinessDateState, 1)
         if business_date_state is None:
-            self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8)))
+            self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
         else:
             business_date_state.current_business_date = date(2026, 9, 8)
             business_date_state.last_closed_at = None
@@ -101,7 +103,7 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(changed["guest_id"], self.guest_usman.id)
 
     def test_deposit_transfer_refund_and_apply_to_folio(self):
-        other_reservation = Reservation(guest_id=self.guest_ahmed.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
+        other_reservation = Reservation(property_id=self.property.id, guest_id=self.guest_ahmed.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
         self.db.add(other_reservation)
         self.db.flush()
         other_folio = Folio(reservation_id=other_reservation.id, status="open")

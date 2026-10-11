@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -26,16 +27,17 @@ class DepositTransferTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8)))
+        self.property = ensure_test_property(self.db)
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
         role = Role(id=1, name="admin")
         self.db.add(role)
         self.db.add(User(id=1, username="admin", password_hash="test", role_id=1))
-        guest = Guest(id=1, full_name="Test Guest")
+        guest = Guest(property_id=self.property.id, id=1, full_name="Test Guest")
         self.db.add(guest)
-        self.db.add(Guest(id=2, full_name="Destination Guest"))
+        self.db.add(Guest(property_id=self.property.id, id=2, full_name="Destination Guest"))
         self.db.flush()
-        reservation_a = Reservation(id=1, guest_id=1, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
-        reservation_b = Reservation(id=2, guest_id=2, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
+        reservation_a = Reservation(property_id=self.property.id, id=1, guest_id=1, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
+        reservation_b = Reservation(property_id=self.property.id, id=2, guest_id=2, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
         self.db.add_all([reservation_a, reservation_b])
         self.db.add_all([Folio(id=1, reservation_id=1, status="open"), Folio(id=2, reservation_id=2, status="open")])
         self.db.add_all([

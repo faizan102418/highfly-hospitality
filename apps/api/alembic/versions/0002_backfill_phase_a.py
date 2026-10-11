@@ -31,11 +31,8 @@ def upgrade() -> None:
         "FROM stays s WHERE s.check_out > s.check_in "
         "AND NOT EXISTS (SELECT 1 FROM stay_rate_segments r WHERE r.stay_id = s.id)"
     )
-    bind.exec_driver_sql(
-        "INSERT INTO business_date_state (id, current_business_date, opened_at, last_closed_at, updated_at) "
-        "VALUES (1, CURRENT_DATE, CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP) "
-        "ON CONFLICT (id) DO NOTHING"
-    )
+    # Tenant-specific business-date state is initialized only when an
+    # organization/property is explicitly provisioned, never by a migration.
 
 
 def downgrade() -> None:

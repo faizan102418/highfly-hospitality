@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -31,16 +32,17 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
 
+        self.property = ensure_test_property(self.db)
         role = Role(id=1, name="admin")
         user = User(id=1, username="admin", password_hash="test", role_id=1)
-        room_type = RoomType(id=1, name="Standard", base_rate=Decimal("10000.00"))
-        room = Room(id=1, number="101", room_type_id=1, status="occupied")
-        guest = Guest(id=1, full_name="Test Guest")
-        reservation = Reservation(id=1, guest_id=1, check_in=date(2026, 9, 13), check_out=date(2026, 9, 15), status="checked_in")
+        room_type = RoomType(property_id=self.property.id, id=1, name="Standard", base_rate=Decimal("10000.00"))
+        room = Room(property_id=self.property.id, id=1, number="101", room_type_id=1, status="occupied")
+        guest = Guest(property_id=self.property.id, id=1, full_name="Test Guest")
+        reservation = Reservation(property_id=self.property.id, id=1, guest_id=1, check_in=date(2026, 9, 13), check_out=date(2026, 9, 15), status="checked_in")
         folio = Folio(id=1, reservation_id=1, status="open")
         stay = Stay(id=1, reservation_id=1, room_id=1, guest_id=1, status="checked_in", check_in=date(2026, 9, 13), check_out=date(2026, 9, 15), agreed_rate=Decimal("10000.00"), payment_due_policy="at_checkout")
         segment = StayRateSegment(id=1, stay_id=1, from_date=date(2026, 9, 13), to_date=date(2026, 9, 15), rate=Decimal("10000.00"), discount_amount=Decimal("0.00"))
-        state = BusinessDateState(id=1, current_business_date=date(2026, 9, 13), opened_at=datetime.utcnow())
+        state = BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 13), opened_at=datetime.utcnow())
         self.db.add_all([role, user, room_type, room, guest, reservation, folio, stay, segment, state])
         self.db.commit()
 
@@ -65,7 +67,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         self.assertEqual(summary.total, Decimal("10000.00"))
         self.assertEqual(summary.balance, Decimal("10000.00"))
 
-        second = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1)
+        second = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1, property_id=self.property.id)
         self.db.commit()
         self.assertEqual(second, 0)
         posted_transactions = self.db.scalars(
@@ -80,8 +82,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         # 2026-09-13 -> 2026-09-16 is exactly three nights.
         for business_date in (date(2026, 9, 13), date(2026, 9, 14)):
             posted = accrue_room_charges_for_business_date(
-                self.db, business_date=business_date, created_by=1
-            )
+                self.db, business_date=business_date, created_by=1, property_id=self.property.id)
             self.assertEqual(posted, 1)
             self.db.commit()
 
@@ -202,7 +203,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
             ])
         self.db.commit()
 
-        summary = build_summary(self.db, date(2026, 9, 13))
+        summary = build_summary(self.db, date(2026, 9, 13), property_id=self.property.id)
         self.assertEqual(summary["payments"]["received_total"], Decimal("150.00"))
         self.assertEqual(summary["payments"]["refunded_total"], Decimal("30.00"))
         self.assertEqual(summary["payments"]["net_total"], Decimal("120.00"))
@@ -219,7 +220,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         # Mirrors a walk-in: two rooms, one night, PKR 10,000 each, PKR 20,000
         # received in advance. The deposit must settle the two room charges once
         # the night is accrued; it must not create revenue or room-charge duplicates.
-        room_2 = Room(id=2, number="102", room_type_id=1, status="occupied")
+        room_2 = Room(property_id=self.property.id, id=2, number="102", room_type_id=1, status="occupied")
         self.db.add(room_2)
         reservation_room_1 = ReservationRoom(reservation_id=1, room_id=1)
         reservation_room_2 = ReservationRoom(reservation_id=1, room_id=2)
@@ -260,11 +261,11 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         )
         self.db.add_all([deposit_1, deposit_2])
         self.db.flush()
-        post_deposit_received(self.db, stay_id=1, folio_id=1, reservation_id=1, deposit_id=1, amount=Decimal("10000.00"), method="cash", created_by=1)
-        post_deposit_received(self.db, stay_id=2, folio_id=1, reservation_id=1, deposit_id=2, amount=Decimal("10000.00"), method="cash", created_by=1)
+        post_deposit_received(self.db, stay_id=1, folio_id=1, reservation_id=1, deposit_id=1, amount=Decimal("10000.00"), method="cash", created_by=1, property_id=self.property.id)
+        post_deposit_received(self.db, stay_id=2, folio_id=1, reservation_id=1, deposit_id=2, amount=Decimal("10000.00"), method="cash", created_by=1, property_id=self.property.id)
         self.db.commit()
 
-        posted = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1)
+        posted = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1, property_id=self.property.id)
         self.assertEqual(posted, 2)
         self.db.commit()
 
@@ -290,7 +291,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         )).all()
         self.assertEqual(sum((Decimal(entry.amount) for entry in cash_entries), Decimal("0.00")), Decimal("20000.00"))
 
-        repeated = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1)
+        repeated = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1, property_id=self.property.id)
         self.assertEqual(repeated, 0)
 
 

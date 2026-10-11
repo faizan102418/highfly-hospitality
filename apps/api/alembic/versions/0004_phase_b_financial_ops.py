@@ -5,7 +5,6 @@ Revises: 0003_financial_ledger
 Create Date: 2026-09-08
 """
 from alembic import op
-from sqlalchemy import text
 
 revision = "0004_phase_b_financial_ops"
 down_revision = "0003_financial_ledger"
@@ -22,7 +21,7 @@ def upgrade() -> None:
 
     bind = op.get_bind()
     Base.metadata.create_all(bind=bind)
-    bind.execute(text("INSERT INTO invoice_sequences (id, last_number) VALUES (1, 0) ON CONFLICT (id) DO NOTHING"))
+    # Invoice sequences are provisioned per property, not seeded globally.
 
 
 def downgrade() -> None:

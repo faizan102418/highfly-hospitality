@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -24,14 +25,15 @@ class FinancialPhaseBTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name="admin")
         self.db.add(role); self.db.flush()
         user = User(username="admin", password_hash="test", role_id=role.id)
-        guest = Guest(full_name="Ledger Guest")
-        rt = RoomType(name="Standard", base_rate=100)
+        guest = Guest(property_id=self.property.id, full_name="Ledger Guest")
+        rt = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([user, guest, rt]); self.db.flush()
-        room = Room(number="201", room_type_id=rt.id, status="occupied")
-        reservation = Reservation(guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
+        room = Room(property_id=self.property.id, number="201", room_type_id=rt.id, status="occupied")
+        reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
         self.db.add_all([room, reservation]); self.db.flush()
         self.db.add(ReservationRoom(reservation_id=reservation.id, room_id=room.id))
         folio = Folio(reservation_id=reservation.id, status="open")
@@ -39,8 +41,8 @@ class FinancialPhaseBTests(unittest.TestCase):
         item = FolioItem(folio_id=folio.id, description="Room 201", category="room", quantity=1, unit_price=100, discount=0)
         payment = Payment(folio_id=folio.id, amount=100, method="cash")
         self.db.add_all([item, payment])
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
-        self.db.add(InvoiceSequence(id=1, last_number=0))
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
+        self.db.add(InvoiceSequence(property_id=self.property.id,  last_number=0))
         self.db.commit()
         self.user = user; self.reservation = reservation; self.folio = folio; self.payment = payment
 

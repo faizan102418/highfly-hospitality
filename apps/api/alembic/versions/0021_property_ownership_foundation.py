@@ -1,6 +1,6 @@
 """Add property ownership to root hotel data.
 
-Revision ID: 0021_property_ownership_foundation
+Revision ID: 0021_property_ownership
 Revises: 0020_multi_tenant_foundation
 """
 
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0021_property_ownership_foundation"
+revision = "0021_property_ownership"
 down_revision = "0020_multi_tenant_foundation"
 branch_labels = None
 depends_on = None
@@ -151,54 +151,71 @@ def _add_property_index(table_name: str) -> None:
 
 
 def upgrade() -> None:
-    # Add nullable ownership columns first so existing rows can be
-    # safely backfilled.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    missing = [name for name in ALL_PROPERTY_TABLES if name not in inspector.get_table_names()]
+    if missing:
+        raise RuntimeError("Cannot apply 0021: expected operational tables are missing: " + ", ".join(missing))
+
+    # Never guess ownership from a customer name or slug. Operational records
+    # must be mapped explicitly. Earlier migrations do, however, insert two
+    # singleton *defaults* on a fresh install: today's unclosed business date
+    # and invoice sequence 0. Those defaults are not hotel transactions and
+    # must be removed before adding mandatory property ownership.
+    root_counts = {
+        table_name: bind.execute(sa.text(f"SELECT COUNT(*) FROM {table_name}")).scalar_one()
+        for table_name in ROOT_TABLES
+    }
+    populated_roots = {name: count for name, count in root_counts.items() if count}
+    if populated_roots:
+        summary = ", ".join(f"{name}={count}" for name, count in populated_roots.items())
+        raise RuntimeError(
+            "Cannot apply 0021: legacy operational rows exist and property ownership cannot be inferred. "
+            "No rows were assigned or changed. Provision a tenant and write an explicit ownership "
+            f"migration before retrying. Non-empty tables: {summary}"
+        )
+
+    business_state_count = bind.execute(
+        sa.text("SELECT COUNT(*) FROM business_date_state")
+    ).scalar_one()
+    if business_state_count:
+        default_state_count = bind.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM business_date_state "
+                "WHERE id = 1 AND last_closed_at IS NULL "
+                "AND last_closed_business_date IS NULL"
+            )
+        ).scalar_one()
+        if business_state_count != 1 or default_state_count != 1:
+            raise RuntimeError(
+                "Cannot apply 0021: business_date_state contains non-default or multiple rows. "
+                "No rows were assigned or changed; prepare an explicit property ownership migration."
+            )
+
+    invoice_count = bind.execute(
+        sa.text("SELECT COUNT(*) FROM invoice_sequences")
+    ).scalar_one()
+    if invoice_count:
+        default_invoice_count = bind.execute(
+            sa.text("SELECT COUNT(*) FROM invoice_sequences WHERE id = 1 AND last_number = 0")
+        ).scalar_one()
+        if invoice_count != 1 or default_invoice_count != 1:
+            raise RuntimeError(
+                "Cannot apply 0021: invoice_sequences contains used or multiple sequences. "
+                "No rows were assigned or changed; prepare an explicit property ownership migration."
+            )
+
+    # Delete only the verified migration-created defaults. Runtime will
+    # initialize property-scoped state after the first property is provisioned.
+    bind.execute(sa.text("DELETE FROM business_date_state"))
+    bind.execute(sa.text("DELETE FROM invoice_sequences"))
+
     for table_name in ALL_PROPERTY_TABLES:
         _add_property_id(table_name)
-
-    bind = op.get_bind()
-
-    # The existing system has one seeded property: La Serene.
-    # All pre-tenancy operational data therefore belongs to that property.
-    property_id = bind.execute(
-        sa.text(
-            """
-            SELECT id
-            FROM properties
-            WHERE slug = 'la-serene'
-            ORDER BY id
-            LIMIT 1
-            """
-        )
-    ).scalar()
-
-    if property_id is None:
-        raise RuntimeError(
-            "Cannot apply 0021: La Serene property was not found."
-        )
-
-    for table_name in ALL_PROPERTY_TABLES:
-        bind.execute(
-            sa.text(
-                f"""
-                UPDATE {table_name}
-                SET property_id = :property_id
-                WHERE property_id IS NULL
-                """
-            ),
-            {"property_id": property_id},
-        )
-
-    # Ownership becomes mandatory after backfill.
     for table_name in ALL_PROPERTY_TABLES:
         _make_property_id_not_null(table_name)
-
-    # Business-date state and invoice numbering are maintained
-    # independently for each property.
     for table_name in STATE_TABLES:
         _add_property_unique_constraint(table_name)
-
-    # Index property ownership for all property-owned tables.
     for table_name in ALL_PROPERTY_TABLES:
         _add_property_index(table_name)
 
@@ -207,5 +224,5 @@ def downgrade() -> None:
     # Intentionally conservative: removing property ownership would
     # destroy the tenant-isolation foundation.
     raise RuntimeError(
-        "0021_property_ownership_foundation is intentionally irreversible."
+        "0021_property_ownership is intentionally irreversible."
     )

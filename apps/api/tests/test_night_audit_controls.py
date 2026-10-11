@@ -9,11 +9,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.models import BusinessDateState, Role, User
+from app.tenancy import PropertyUserAccess
 from app.night_audit import ClosingConfirm, build_summary, close_day, get_business_date
 
 
@@ -30,14 +32,16 @@ class NightAuditControlTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name="admin")
         self.db.add(role)
         self.db.flush()
         self.user = User(username="admin", password_hash="test", role_id=role.id)
         self.db.add(self.user)
         self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=self.user.id, property_id=self.property.id, access_scope="property", is_primary=True))
         self.user_id = self.user.id
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
         self.db.commit()
 
     def tearDown(self):
@@ -45,8 +49,8 @@ class NightAuditControlTests(unittest.TestCase):
         self.db.close()
 
     def test_night_audit_uses_controlled_business_date(self):
-        self.assertEqual(get_business_date(self.db), date(2026, 9, 8))
-        summary = build_summary(self.db, get_business_date(self.db))
+        self.assertEqual(get_business_date(self.db, self.property.id), date(2026, 9, 8))
+        summary = build_summary(self.db, get_business_date(self.db, self.property.id), property_id=self.property.id)
         self.assertEqual(summary["business_date"], date(2026, 9, 8))
         self.assertTrue(summary["posting_open"])
         self.assertEqual(summary["finance"]["status"], "balanced")
@@ -54,11 +58,11 @@ class NightAuditControlTests(unittest.TestCase):
         self.assertEqual(summary["finance"]["total_credits"], Decimal("0.00"))
 
     def test_closed_business_date_is_not_posting_open(self):
-        state = self.db.get(BusinessDateState, 1)
+        state = self.db.scalar(__import__("sqlalchemy").select(BusinessDateState).where(BusinessDateState.property_id == self.property.id))
         state.last_closed_business_date = date(2026, 9, 8)
         state.last_closed_at = datetime(2026, 9, 8, 23, 59, 0)
         self.db.commit()
-        summary = build_summary(self.db, date(2026, 9, 8))
+        summary = build_summary(self.db, date(2026, 9, 8), property_id=self.property.id)
         self.assertFalse(summary["posting_open"])
 
     def test_close_atomically_rolls_business_date_forward(self):
@@ -71,7 +75,7 @@ class NightAuditControlTests(unittest.TestCase):
         state = self.db.get(BusinessDateState, 1)
         self.assertEqual(state.current_business_date, date(2026, 9, 9))
         self.assertIsNotNone(state.last_closed_at)
-        self.assertEqual(get_business_date(self.db), date(2026, 9, 9))
+        self.assertEqual(get_business_date(self.db, self.property.id), date(2026, 9, 9))
 
     def test_duplicate_close_for_already_closed_date_is_rejected(self):
         with patch("app.night_audit.create_pack", return_value={"json": "daily-closing.json", "xlsx": "daily-closing.xlsx", "pdf": "daily-closing.pdf"}):
