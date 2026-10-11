@@ -201,10 +201,11 @@ def cancel_purchase_order(po_id: int, db: Session = Depends(get_db), user: User 
 
 @router.post("/orders/{po_id}/receive", status_code=201)
 def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    property_ = resolve_authorized_property(db, user.id)
     key = (idempotency_key or "").strip()
     if not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for purchase receipt")
-    business_date = lock_business_date(db)
-    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id).with_for_update()).mappings().first()
+    business_date = lock_business_date(db, property_id=property_.id)
+    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).with_for_update()).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
     expected = receipt_fingerprint(po_id, business_date, payload.lines, payload.notes)
     existing = db.execute(select(goods_receipts).where(goods_receipts.c.idempotency_key == key).with_for_update()).mappings().first()
