@@ -73,7 +73,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
                 db.flush()
                 post_transaction(
                     db, transaction_type="deposit_received", description=f"B2 test deposit {suffix}", reference_type="deposit", reference_id=str(received.id),
-                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id,
+                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id, property_id=property_.id,
                     lines=[
                         {"account": "Cash", "direction": "debit", "amount": Decimal(deposit_amount), "folio_id": folio.id, "stay_id": stay.id},
                         {"account": "Guest Deposits", "direction": "credit", "amount": Decimal(deposit_amount), "folio_id": folio.id, "stay_id": stay.id},
@@ -96,7 +96,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
                 db.flush()
                 post_transaction(
                     db, transaction_type="folio_payment", description=f"B2 refund seed payment {suffix}", reference_type="payment", reference_id=str(refund_payment.id),
-                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id,
+                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id, property_id=property_.id,
                     lines=[
                         {"account": "Cash", "direction": "debit", "amount": Decimal("100.00"), "folio_id": folio.id, "payment_method":"cash"},
                         {"account": "Guest Receivables", "direction": "credit", "amount": Decimal("100.00"), "folio_id": folio.id, "payment_method":"cash"},
@@ -115,7 +115,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
                     db.flush()
                     deposit_apply_ids.append(apply.id)
             db.commit()
-            return {"user_id": user.id, "folio_id": folio.id, "reservation_id": reservation.id, "stay_id": stay.id, "payment_ids": payment_ids, "refund_ids": refund_ids, "deposit_apply_ids": deposit_apply_ids}
+            return {"user_id": user.id, "property_id": property_.id, "folio_id": folio.id, "reservation_id": reservation.id, "stay_id": stay.id, "payment_ids": payment_ids, "refund_ids": refund_ids, "deposit_apply_ids": deposit_apply_ids}
 
     def _run_two(self, fn1, fn2):
         barrier = Barrier(2)
@@ -138,7 +138,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
     def test_concurrent_payments_are_serialized(self):
         f = self._fixture(charge_amount=160, deposit_amount=0)
         def post_payment(db, pid):
-            return post_transaction(db, transaction_type="folio_payment", description="B2 race payment", reference_type="payment", reference_id=str(pid), folio_id=f["folio_id"], reservation_id=f["reservation_id"], created_by=f["user_id"], lines=[{"account":"Cash","direction":"debit","amount":Decimal("60.00"),"folio_id":f["folio_id"]},{"account":"Guest Receivables","direction":"credit","amount":Decimal("60.00"),"folio_id":f["folio_id"]}]).id
+            return post_transaction(db, transaction_type="folio_payment", description="B2 race payment", reference_type="payment", reference_id=str(pid), folio_id=f["folio_id"], reservation_id=f["reservation_id"], created_by=f["user_id"], property_id=f["property_id"], lines=[{"account":"Cash","direction":"debit","amount":Decimal("60.00"),"folio_id":f["folio_id"]},{"account":"Guest Receivables","direction":"credit","amount":Decimal("60.00"),"folio_id":f["folio_id"]}]).id
         results = self._run_two(lambda db: post_payment(db, f["payment_ids"][0]), lambda db: post_payment(db, f["payment_ids"][1]))
         self.assertEqual(sum(r[0] == "ok" for r in results), 1, repr(results))
         self.assertEqual(sum(r[0] == "rejected" for r in results), 1, repr(results))
@@ -148,7 +148,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
     def test_concurrent_refunds_are_serialized(self):
         f = self._fixture(charge_amount=100, deposit_amount=0)
         def post_refund(db, rid):
-            return post_transaction(db, transaction_type="payment_refund", description="B2 race refund", reference_type="payment_refund", reference_id=str(rid), folio_id=f["folio_id"], reservation_id=f["reservation_id"], created_by=f["user_id"], lines=[{"account":"Guest Receivables","direction":"debit","amount":Decimal("70.00"),"folio_id":f["folio_id"]},{"account":"Cash","direction":"credit","amount":Decimal("70.00"),"folio_id":f["folio_id"],"payment_method":"cash"}]).id
+            return post_transaction(db, transaction_type="payment_refund", description="B2 race refund", reference_type="payment_refund", reference_id=str(rid), folio_id=f["folio_id"], reservation_id=f["reservation_id"], created_by=f["user_id"], property_id=f["property_id"], lines=[{"account":"Guest Receivables","direction":"debit","amount":Decimal("70.00"),"folio_id":f["folio_id"]},{"account":"Cash","direction":"credit","amount":Decimal("70.00"),"folio_id":f["folio_id"],"payment_method":"cash"}]).id
         results = list(self._run_two(lambda db: post_refund(db, f["refund_ids"][0]), lambda db: post_refund(db, f["refund_ids"][1])))
         self.assertEqual(sum(r[0] == "ok" for r in results), 1)
         self.assertEqual(sum(r[0] == "rejected" for r in results), 1)
@@ -159,7 +159,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
     def test_concurrent_deposit_applications_are_serialized(self):
         f = self._fixture(charge_amount=0, deposit_amount=100)
         def post_apply(db, did):
-            return post_transaction(db, transaction_type="deposit_applied", description="B2 race deposit apply", reference_type="deposit", reference_id=str(did), folio_id=f["folio_id"], reservation_id=f["reservation_id"], created_by=f["user_id"], lines=[{"account":"Guest Deposits","direction":"debit","amount":Decimal("70.00"),"folio_id":f["folio_id"],"stay_id":f["stay_id"]},{"account":"Guest Receivables","direction":"credit","amount":Decimal("70.00"),"folio_id":f["folio_id"],"stay_id":f["stay_id"]}]).id
+            return post_transaction(db, transaction_type="deposit_applied", description="B2 race deposit apply", reference_type="deposit", reference_id=str(did), folio_id=f["folio_id"], reservation_id=f["reservation_id"], created_by=f["user_id"], property_id=f["property_id"], lines=[{"account":"Guest Deposits","direction":"debit","amount":Decimal("70.00"),"folio_id":f["folio_id"],"stay_id":f["stay_id"]},{"account":"Guest Receivables","direction":"credit","amount":Decimal("70.00"),"folio_id":f["folio_id"],"stay_id":f["stay_id"]}]).id
         results = list(self._run_two(lambda db: post_apply(db, f["deposit_apply_ids"][0]), lambda db: post_apply(db, f["deposit_apply_ids"][1])))
         self.assertEqual(sum(r[0] == "ok" for r in results), 1)
         self.assertEqual(sum(r[0] == "rejected" for r in results), 1)
