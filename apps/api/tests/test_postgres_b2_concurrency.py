@@ -73,7 +73,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
                 db.flush()
                 post_transaction(
                     db, transaction_type="deposit_received", description=f"B2 test deposit {suffix}", reference_type="deposit", reference_id=str(received.id),
-                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id,
+                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id, property_id=property_.id,
                     lines=[
                         {"account": "Cash", "direction": "debit", "amount": Decimal(deposit_amount), "folio_id": folio.id, "stay_id": stay.id},
                         {"account": "Guest Deposits", "direction": "credit", "amount": Decimal(deposit_amount), "folio_id": folio.id, "stay_id": stay.id},
@@ -96,7 +96,7 @@ class PostgreSQLB2ConcurrencyTests(unittest.TestCase):
                 db.flush()
                 post_transaction(
                     db, transaction_type="folio_payment", description=f"B2 refund seed payment {suffix}", reference_type="payment", reference_id=str(refund_payment.id),
-                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id,
+                    folio_id=folio.id, reservation_id=reservation.id, created_by=user.id, property_id=property_.id,
                     lines=[
                         {"account": "Cash", "direction": "debit", "amount": Decimal("100.00"), "folio_id": folio.id, "payment_method":"cash"},
                         {"account": "Guest Receivables", "direction": "credit", "amount": Decimal("100.00"), "folio_id": folio.id, "payment_method":"cash"},
