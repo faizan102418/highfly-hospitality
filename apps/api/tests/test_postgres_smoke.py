@@ -39,7 +39,6 @@ class PostgreSQLSmokeTest(unittest.TestCase):
         with Session(engine) as db:
             property_ = ensure_test_property(db)
             self._ensure_business_date(db, property_)
-            self._ensure_business_date(db, property_)
             tx = post_transaction(
                 db,
                 transaction_type="ci_smoke",
