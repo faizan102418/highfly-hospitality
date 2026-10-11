@@ -100,14 +100,25 @@ class PostgreSQLSmokeTest(unittest.TestCase):
             )
             db.commit()
 
-            db.add(
-                LedgerEntry(
-                    transaction_id=tx.id,
-                    account="Cash",
-                    direction="debit",
-                    amount=Decimal("1.00"),
-                    currency="USD",
-                )
+            # Keep the transaction numerically balanced so only the mixed-currency
+            # database guard can reject it.
+            db.add_all(
+                [
+                    LedgerEntry(
+                        transaction_id=tx.id,
+                        account="Cash",
+                        direction="debit",
+                        amount=Decimal("1.00"),
+                        currency="USD",
+                    ),
+                    LedgerEntry(
+                        transaction_id=tx.id,
+                        account="Test Revenue",
+                        direction="credit",
+                        amount=Decimal("1.00"),
+                        currency="USD",
+                    ),
+                ]
             )
             with self.assertRaises(DBAPIError):
                 db.commit()
