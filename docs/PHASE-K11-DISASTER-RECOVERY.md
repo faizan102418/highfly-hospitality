@@ -31,8 +31,8 @@ The script requires the explicit `--confirm` acknowledgement internally and reje
 
 The underlying Phase J restore function first validates the dump manifest, SHA-256 checksum, and file size. It then restores the PostgreSQL custom-format dump with `pg_restore` and verifies:
 
-- exactly one `BusinessDateState` singleton exists;
-- the restored business date matches the backup manifest;
+- every configured property has a `BusinessDateState` row;
+- each property's restored business date matches the backup manifest;
 - the restored Alembic revision matches the backup manifest;
 - every posted financial transaction remains balanced.
 
