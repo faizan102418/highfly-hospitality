@@ -37,7 +37,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
             {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("25.00")},
         ]
         first = post_transaction(self.db, transaction_type="cash_sale", description="Room sale", idempotency_key="sale-1", lines=lines, property_id=self.property.id)
-        second = post_transaction(self.db, transaction_type="cash_sale", description="Room sale", idempotency_key="sale-1", lines=lines)
+        second = post_transaction(self.db, transaction_type="cash_sale", description="Room sale", idempotency_key="sale-1", lines=lines, property_id=self.property.id)
         self.assertEqual(first.id, second.id)
         self.assertEqual(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.idempotency_key == "sale-1")), first.id)
         self.assertEqual(self.db.scalar(select(LedgerEntry.transaction_id).where(LedgerEntry.transaction_id == first.id)), first.id)
@@ -64,6 +64,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
                 description="Room sale",
                 idempotency_key="sale-2",
                 reference_type="folio_item",
+                property_id=self.property.id,
                 reference_id="41",
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("30.00")},
@@ -77,6 +78,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
             transaction_type="cash_sale",
             description="Trimmed key",
             idempotency_key="  sale-3  ",
+            property_id=self.property.id,
             lines=[
                 {"account": "Cash", "direction": "debit", "amount": Decimal("10.00")},
                 {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("10.00")},
@@ -90,6 +92,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
             transaction_type="cash_sale",
             description="Unkeyed sale",
             idempotency_key="   ",
+            property_id=self.property.id,
             lines=[
                 {"account": "Cash", "direction": "debit", "amount": Decimal("10.00")},
                 {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("10.00")},
