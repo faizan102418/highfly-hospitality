@@ -72,8 +72,8 @@ class NightAuditPreviewTests(unittest.TestCase):
         )
 
         before_items = self.db.scalar(select(FolioItem.id))
-        summary = build_summary(self.db, date(2026, 9, 13))
-        preview = build_pre_close_preview(self.db, date(2026, 9, 13), summary)
+        summary = build_summary(self.db, date(2026, 9, 13, property_id=self.property.id))
+        preview = build_pre_close_preview(self.db, date(2026, 9, 13, property_id=self.property.id), summary)
 
         self.assertEqual(preview["opening"]["cash"], Decimal("0.00"))
         self.assertEqual(preview["opening"]["guest_receivables"], Decimal("20000.00"))
@@ -108,7 +108,7 @@ class NightAuditPreviewTests(unittest.TestCase):
         ])
         self.db.commit()
 
-        summary = build_summary(self.db, date(2026, 9, 13))
+        summary = build_summary(self.db, date(2026, 9, 13, property_id=self.property.id))
 
         self.assertEqual(summary["revenue"]["gross"], Decimal("0.00"))
         self.assertEqual(summary["payments"]["cash"], Decimal("25000.00"))
@@ -118,8 +118,8 @@ class NightAuditPreviewTests(unittest.TestCase):
         stay = self.db.get(Stay, 1)
         stay.check_out = date(2026, 9, 13)
         self.db.commit()
-        summary = build_summary(self.db, date(2026, 9, 13))
-        preview = build_pre_close_preview(self.db, date(2026, 9, 13), summary)
+        summary = build_summary(self.db, date(2026, 9, 13, property_id=self.property.id))
+        preview = build_pre_close_preview(self.db, date(2026, 9, 13, property_id=self.property.id), summary)
         self.assertEqual(preview["pending_night_audit"]["room_charges_count"], 0)
         self.assertEqual(preview["pending_night_audit"]["room_charges_total"], Decimal("0.00"))
 

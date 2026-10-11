@@ -53,7 +53,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
     def test_posts_one_room_night_and_is_idempotent(self):
         business_date = date(2026, 9, 13)
 
-        first = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1)
+        first = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1, property_id=self.property.id)
         self.db.commit()
         self.assertEqual(first, 1)
 
@@ -67,7 +67,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         self.assertEqual(summary.total, Decimal("10000.00"))
         self.assertEqual(summary.balance, Decimal("10000.00"))
 
-        second = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1)
+        second = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1, property_id=self.property.id)
         self.db.commit()
         self.assertEqual(second, 0)
         posted_transactions = self.db.scalars(
@@ -83,7 +83,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         for business_date in (date(2026, 9, 13), date(2026, 9, 14)):
             posted = accrue_room_charges_for_business_date(
                 self.db, business_date=business_date, created_by=1
-            )
+            , property_id=self.property.id)
             self.assertEqual(posted, 1)
             self.db.commit()
 
@@ -204,7 +204,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
             ])
         self.db.commit()
 
-        summary = build_summary(self.db, date(2026, 9, 13))
+        summary = build_summary(self.db, date(2026, 9, 13, property_id=self.property.id))
         self.assertEqual(summary["payments"]["received_total"], Decimal("150.00"))
         self.assertEqual(summary["payments"]["refunded_total"], Decimal("30.00"))
         self.assertEqual(summary["payments"]["net_total"], Decimal("120.00"))

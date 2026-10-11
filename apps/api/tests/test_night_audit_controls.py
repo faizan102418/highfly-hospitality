@@ -47,8 +47,8 @@ class NightAuditControlTests(unittest.TestCase):
         self.db.close()
 
     def test_night_audit_uses_controlled_business_date(self):
-        self.assertEqual(get_business_date(self.db), date(2026, 9, 8))
-        summary = build_summary(self.db, get_business_date(self.db))
+        self.assertEqual(get_business_date(self.db, self.property.id), date(2026, 9, 8))
+        summary = build_summary(self.db, get_business_date(self.db, self.property.id, property_id=self.property.id))
         self.assertEqual(summary["business_date"], date(2026, 9, 8))
         self.assertTrue(summary["posting_open"])
         self.assertEqual(summary["finance"]["status"], "balanced")
@@ -60,7 +60,7 @@ class NightAuditControlTests(unittest.TestCase):
         state.last_closed_business_date = date(2026, 9, 8)
         state.last_closed_at = datetime(2026, 9, 8, 23, 59, 0)
         self.db.commit()
-        summary = build_summary(self.db, date(2026, 9, 8))
+        summary = build_summary(self.db, date(2026, 9, 8, property_id=self.property.id))
         self.assertFalse(summary["posting_open"])
 
     def test_close_atomically_rolls_business_date_forward(self):
@@ -73,7 +73,7 @@ class NightAuditControlTests(unittest.TestCase):
         state = self.db.get(BusinessDateState, 1)
         self.assertEqual(state.current_business_date, date(2026, 9, 9))
         self.assertIsNotNone(state.last_closed_at)
-        self.assertEqual(get_business_date(self.db), date(2026, 9, 9))
+        self.assertEqual(get_business_date(self.db, self.property.id), date(2026, 9, 9))
 
     def test_duplicate_close_for_already_closed_date_is_rejected(self):
         with patch("app.night_audit.create_pack", return_value={"json": "daily-closing.json", "xlsx": "daily-closing.xlsx", "pdf": "daily-closing.pdf"}):
