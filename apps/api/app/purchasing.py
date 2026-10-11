@@ -186,9 +186,10 @@ def approve_purchase_order(po_id: int, db: Session = Depends(get_db), user: User
 
 @router.post("/orders/{po_id}/cancel")
 def cancel_purchase_order(po_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    business_date = lock_business_date(db)
-    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).with_for_update()).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
+    business_date = lock_business_date(db, property_id=property_.id)
     if po["business_date"] != business_date: raise HTTPException(status_code=409, detail="Purchase order belongs to a different business date")
     if po["status"] not in {"draft", "approved"}: raise HTTPException(status_code=409, detail="Only unreceived purchase orders can be cancelled")
     if db.scalar(select(purchase_order_lines.c.id).where(purchase_order_lines.c.purchase_order_id == po_id, purchase_order_lines.c.received_quantity > 0).limit(1)) is not None: raise HTTPException(status_code=409, detail="Purchase order with receipts cannot be cancelled")
@@ -217,7 +218,7 @@ def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key:
     po_lines = {r["id"]: dict(r) for r in db.execute(select(purchase_order_lines).where(purchase_order_lines.c.id.in_(line_ids), purchase_order_lines.c.purchase_order_id == po_id).with_for_update()).mappings().all()}
     if len(po_lines) != len(line_ids): raise HTTPException(status_code=404, detail="One or more purchase order lines were not found")
     stock_ids = [r["stock_item_id"] for r in po_lines.values()]
-    stocks = {s.id: s for s in db.scalars(select(StockItem).where(StockItem.id.in_(stock_ids)).with_for_update()).all()}
+    stocks = {s.id: s for s in db.scalars(select(StockItem).where(StockItem.id.in_(stock_ids), StockItem.property_id == property_.id).with_for_update()).all()}
     if len(stocks) != len(stock_ids): raise HTTPException(status_code=404, detail="One or more stock items were not found")
     for req in payload.lines:
         line = po_lines[req.purchase_order_line_id]
