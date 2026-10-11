@@ -13,7 +13,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from .auth import require_roles
 from .db import Base, get_db
 from .ledger import post_transaction
-from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, Room, User
+from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, Room, StayOccupant, User
 from .pms_core import Stay
 from .stay_lifecycle import StayFolioWindow
 
