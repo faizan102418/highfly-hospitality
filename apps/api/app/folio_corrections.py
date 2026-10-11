@@ -14,6 +14,7 @@ from .folio_integrity import expected_active_total, integrity_snapshot, item_has
 from .ledger import post_transaction, reverse_transaction
 from .models import AuditLog, FinancialTransaction, Folio, FolioItem, Reservation, User
 from .schemas import FolioItemResponse
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="", tags=["folio-corrections"])
 MONEY = Decimal("0.01")
@@ -69,7 +70,7 @@ def _posted_item_transactions(db: Session, item_id: int) -> list[FinancialTransa
     ).all()
 
 
-def _validate_target(db: Session, folio_id: int, item_id: int) -> tuple[Folio, FolioItem, Reservation]:
+def _validate_target(db: Session, folio_id: int, item_id: int, user_id: int) -> tuple[Folio, FolioItem, Reservation]:
     folio = db.get(Folio, folio_id)
     item = db.get(FolioItem, item_id)
     if not folio or not item or item.folio_id != folio_id:
@@ -79,6 +80,7 @@ def _validate_target(db: Session, folio_id: int, item_id: int) -> tuple[Folio, F
     reservation = db.get(Reservation, folio.reservation_id)
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
     return folio, item, reservation
 
 
@@ -91,6 +93,7 @@ def reconcile_and_reopen_folio(
     folio = db.get(Folio, folio_id)
     if not folio:
         raise HTTPException(status_code=404, detail="Folio not found")
+    resolve_authorized_property(db, user.id, reservation_property_id(db, folio))
     if folio.status != "closed":
         raise HTTPException(status_code=409, detail="Only a closed folio can be reopened for reconciliation")
 
@@ -165,8 +168,10 @@ def get_folio_integrity(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "reception")),
 ):
-    if not db.get(Folio, folio_id):
+    folio = db.get(Folio, folio_id)
+    if not folio:
         raise HTTPException(status_code=404, detail="Folio not found")
+    resolve_authorized_property(db, _.id, reservation_property_id(db, folio))
     return integrity_snapshot(db, folio_id)
 
 
@@ -178,7 +183,7 @@ def reverse_folio_item(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    folio, item, _ = _validate_target(db, folio_id, item_id)
+    folio, item, _ = _validate_target(db, folio_id, item_id, user.id)
     transactions = _posted_item_transactions(db, item.id)
     if not transactions:
         raise HTTPException(status_code=409, detail="Folio charge is already reversed or has no posted financial transactions")
@@ -204,7 +209,7 @@ def correct_folio_item(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    folio, item, reservation = _validate_target(db, folio_id, item_id)
+    folio, item, reservation = _validate_target(db, folio_id, item_id, user.id)
     gross = money(payload.quantity * payload.unit_price)
     if payload.discount > gross:
         raise HTTPException(status_code=400, detail="Discount cannot exceed the line amount")

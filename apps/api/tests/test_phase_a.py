@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property
@@ -69,10 +69,12 @@ class PhaseADomainTests(unittest.TestCase):
         balance = sum(row.amount if row.transaction_type in {"received", "adjusted"} else -row.amount for row in self.db.query(DepositTransaction).filter(DepositTransaction.stay_id == self.stay.id).all())
         self.assertEqual(balance, 60)
 
-    def test_business_date_state_exists_as_singleton_capable_table(self):
+    def test_business_date_state_is_scoped_to_property(self):
         state = BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8))
         self.db.add(state); self.db.commit()
-        self.assertEqual(self.db.get(BusinessDateState, 1).current_business_date, date(2026, 9, 8))
+        persisted = self.db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == self.property.id))
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.current_business_date, date(2026, 9, 8))
 
 
 if __name__ == "__main__":
