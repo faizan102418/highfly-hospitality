@@ -34,7 +34,7 @@ class LedgerBusinessDateAuthorityTests(unittest.TestCase):
             property_ = ensure_test_property(db)
             db.add(BusinessDateState(property_id=property_.id, current_business_date=expected))
             db.commit()
-            self.assertEqual(current_business_date(db, property_.id), expected)
+            self.assertEqual(current_business_date(db, property_id=property_.id), expected)
 
 
 if __name__ == "__main__":
