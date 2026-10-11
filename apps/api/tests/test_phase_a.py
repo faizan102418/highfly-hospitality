@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property
