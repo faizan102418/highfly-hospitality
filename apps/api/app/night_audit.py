@@ -220,6 +220,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
     deposit_applied = db.scalar(select(func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date == business_date,
             FinancialTransaction.status == "posted",
             FinancialTransaction.transaction_type == "deposit_applied",
@@ -237,6 +238,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
     deposit_debit = db.scalar(select(func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.status == "posted",
             LedgerEntry.account == "Guest Deposits",
             LedgerEntry.direction == "debit",
