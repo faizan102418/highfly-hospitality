@@ -82,7 +82,7 @@ class FinancialBusinessDateHardeningTests(unittest.TestCase):
     def test_authoritative_business_date_remains_strict(self):
         with Session(self.engine) as db:
             with self.assertRaises(HTTPException) as context:
-                get_current_business_date(db)
+                get_current_business_date(db, property_id=property_.id)
             self.assertEqual(context.exception.status_code, 503)
 
 
