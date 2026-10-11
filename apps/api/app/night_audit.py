@@ -333,8 +333,8 @@ def build_pre_close_preview(db: Session, business_date: date, summary: dict, *, 
     return {"business_date": business_date, "opening": {"cash": money(opening_cash), "guest_receivables": money(opening_receivables), "outstanding": money(max(Decimal("0.00"), opening_receivables))}, "activity": {"room_revenue": money(summary["revenue"]["room"]), "payments_received": money(summary["payments"]["total"]), "cash_received": today_hotel_cash, "gross_cash_received": money(today_cash), "staff_service_charge": today_service_charge, "expenses": money(summary["expenses"]), "ledger_transactions": summary["finance"]["ledger_transactions"], "guest_receivables_delta": money(today_receivables)}, "pending_night_audit": {"room_charges_count": len(pending), "room_charges_total": pending_total, "anticipated_deposit_application": anticipated_deposit_application, "items": pending}, "projected_close": {"room_revenue": money(summary["revenue"]["room"] + pending_total), "cash": projected_cash, "guest_receivables": projected_receivables, "outstanding": projected_receivables, "gross_revenue": money(summary["revenue"]["gross"] + pending_total)}, "controls": {"trial_balance": "balanced" if summary["finance"]["trial_balance"]["balanced"] else "review", "revenue_difference": money(summary["finance"]["revenue_difference"]), "cash_difference": money(summary["finance"]["cash_difference"])} }
 
 
-def pack_dir(business_date: date) -> Path:
-    path = PACK_ROOT / business_date.isoformat(); path.mkdir(parents=True, exist_ok=True); return path
+def pack_dir(business_date: date, property_id: int) -> Path:
+    path = PACK_ROOT / str(property_id) / business_date.isoformat(); path.mkdir(parents=True, exist_ok=True); return path
 
 
 def build_json(pack: Path, summary: dict, notes: str | None, closed_by: str, closed_at: datetime) -> Path:
@@ -393,10 +393,10 @@ def create_pack(summary: dict, notes: str | None, closed_by: str, closed_at: dat
     pack = pack_dir(summary["business_date"], summary["property_id"]); files = {"json": build_json(pack, summary, notes, closed_by, closed_at), "xlsx": build_xlsx(pack, summary, notes, closed_by, closed_at), "pdf": build_pdf(pack, summary, notes, closed_by, closed_at)}; return {kind: f.name for kind, f in files.items()}
 
 
-def get_pack_file(business_date: date, filename: str) -> Path:
+def get_pack_file(business_date: date, filename: str, property_id: int) -> Path:
     allowed = {"daily-closing.pdf", "daily-closing.xlsx", "daily-closing.json"}
     if filename not in allowed: raise HTTPException(status_code=400, detail="Invalid closing pack file")
-    path = pack_dir(business_date) / filename
+    path = pack_dir(business_date, property_id) / filename
     if not path.exists(): raise HTTPException(status_code=404, detail="Closing pack has not been generated for this business date")
     return path
 
