@@ -19,12 +19,10 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
     def test_reservation_status_transitions_are_constrained(self):
         with Session(engine) as db:
             property_ = ensure_test_property(db)
-            property_ = ensure_test_property(db)
             guest = Guest(property_id=property_.id, full_name="Lifecycle Test Guest")
             db.add(guest)
             db.flush()
-            reservation = Reservation(property_id=property_.id, 
-                property_id=property_.id,
+            reservation = Reservation(property_id=property_.id,
                 guest_id=guest.id,
                 check_in=date(2026, 9, 10),
                 check_out=date(2026, 9, 12),
