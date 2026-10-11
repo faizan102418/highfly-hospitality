@@ -50,7 +50,7 @@ class NightAuditCloseActiveDepartureTests(unittest.TestCase):
         return reservation
 
     def assert_close_rejected(self, reservation):
-        with patch("app.night_audit.lock_current_business_date", return_value=self.state), patch(
+        with patch("app.night_audit.resolve_authorized_property", return_value=SimpleNamespace(id=self.property.id)), patch("app.night_audit.lock_current_business_date", return_value=self.state), patch(
             "app.night_audit.finance_snapshot"
         ) as finance_snapshot, patch("app.night_audit.create_pack") as create_pack:
             with self.assertRaises(HTTPException) as context:

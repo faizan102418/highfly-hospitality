@@ -15,6 +15,7 @@ import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.models import BusinessDateState, Role, User
+from app.tenancy import PropertyUserAccess
 from app.night_audit import ClosingConfirm, build_summary, close_day, get_business_date
 
 
@@ -38,6 +39,7 @@ class NightAuditControlTests(unittest.TestCase):
         self.user = User(username="admin", password_hash="test", role_id=role.id)
         self.db.add(self.user)
         self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=self.user.id, property_id=self.property.id, access_scope="property", is_primary=True))
         self.user_id = self.user.id
         self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
         self.db.commit()
@@ -56,7 +58,7 @@ class NightAuditControlTests(unittest.TestCase):
         self.assertEqual(summary["finance"]["total_credits"], Decimal("0.00"))
 
     def test_closed_business_date_is_not_posting_open(self):
-        state = self.db.get(BusinessDateState, 1)
+        state = self.db.scalar(__import__("sqlalchemy").select(BusinessDateState).where(BusinessDateState.property_id == self.property.id))
         state.last_closed_business_date = date(2026, 9, 8)
         state.last_closed_at = datetime(2026, 9, 8, 23, 59, 0)
         self.db.commit()
