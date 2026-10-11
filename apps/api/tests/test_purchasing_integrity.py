@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import BusinessDateState, Role, StockItem, StockMovement, User
 from app.purchasing import (
@@ -43,6 +43,7 @@ class PurchasingIntegrityTests(unittest.TestCase):
         self.stock = StockItem(property_id=self.property.id, sku="RICE", name="Rice", unit="kg", on_hand=Decimal("10.000"))
         self.db.add(self.stock)
         self.db.flush()
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
         self.db.add(StockMovement(stock_item_id=self.stock.id, business_date=self.today, quantity=Decimal("10.000"), movement_type="opening", reference_type="stock_item", reference_id=str(self.stock.id), unit_cost=Decimal("0.00"), created_by=self.user.id))
         self.db.commit()
         self.supplier = create_supplier(SupplierCreate(code="SUP-01", name="Golden Foods"), self.db, self.user)

@@ -22,7 +22,10 @@ class BusinessDateArchitectureTests(unittest.TestCase):
 
     def test_business_date_reads_persisted_state(self):
         with Session(self.engine) as db:
-            property_ = Property(organization=Organization(name="Test Org", slug="test-org"), name="Test Property", code="TEST", slug="test-property")
+            organization = Organization(name="Test Org", slug="test-org")
+            db.add(organization)
+            db.flush()
+            property_ = Property(organization_id=organization.id, name="Test Property", code="TEST", slug="test-property")
             db.add(property_)
             db.flush()
             expected = date.today() + timedelta(days=7)

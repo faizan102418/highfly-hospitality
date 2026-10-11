@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -28,7 +28,7 @@ class ExpensesModuleTests(unittest.TestCase):
         user = User(id=1, username="admin", password_hash="test", role_id=1)
         self.business_date = date(2026, 9, 16)
         state = BusinessDateState(property_id=self.property.id, current_business_date=self.business_date, opened_at=datetime.utcnow())
-        self.db.add_all([role, user, state]); self.db.commit(); self.user = user
+        self.db.add_all([role, user, state]); self.db.flush(); ensure_test_property_access(self.db, user.id, self.property.id); self.db.commit(); self.user = user
 
     def tearDown(self):
         self.db.rollback(); self.db.close()

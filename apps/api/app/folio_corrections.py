@@ -29,9 +29,9 @@ def item_line_total(item: FolioItem) -> Decimal:
     return money(max(Decimal("0.00"), gross - Decimal(item.discount)))
 
 
-def audit(db: Session, user_id: int, action: str, entity_id: int, details: dict) -> None:
+def audit(db: Session, property_id: int, user_id: int, action: str, entity_id: int, details: dict) -> None:
     import json
-    db.add(AuditLog(user_id=user_id, action=action, entity_type="folio_item", entity_id=str(entity_id), details=json.dumps(details)))
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type="folio_item", entity_id=str(entity_id), details=json.dumps(details)))
 
 
 class FolioItemCorrection(BaseModel):
@@ -48,6 +48,13 @@ class FolioItemCorrectionResponse(BaseModel):
     original_item_id: int
     replacement_item: FolioItemResponse | None = None
     reversed_transaction_ids: list[int]
+
+
+def reservation_property_id(db: Session, folio: Folio) -> int:
+    reservation = db.get(Reservation, folio.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    return reservation.property_id
 
 
 def _posted_item_transactions(db: Session, item_id: int) -> list[FinancialTransaction]:
@@ -179,7 +186,7 @@ def reverse_folio_item(
     try:
         for tx in transactions:
             reverse_transaction(db, transaction_id=tx.id, created_by=user.id, reason=reason)
-        audit(db, user.id, "reverse", item.id, {"folio_id": folio_id, "reason": reason, "transaction_ids": transaction_ids})
+        audit(db, reservation_property_id(db, folio), user.id, "reverse", item.id, {"folio_id": folio_id, "reason": reason, "transaction_ids": transaction_ids})
         db.commit()
     except (ValueError, HTTPException) as exc:
         db.rollback()
@@ -233,6 +240,7 @@ def correct_folio_item(
         )
         audit(
             db,
+            reservation.property_id,
             user.id,
             "correct",
             item.id,

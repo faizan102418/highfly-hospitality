@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -110,7 +110,7 @@ class RoomChargeReconciliationTests(unittest.TestCase):
         )
         db.add(item)
         db.flush()
-        db.get(BusinessDateState, 1).current_business_date = posting_date
+        db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == reservation.property_id)).current_business_date = posting_date
         db.flush()
         post_folio_charge_authoritative(
             db,
@@ -297,7 +297,7 @@ class RoomChargeReconciliationTests(unittest.TestCase):
             db.commit()
 
             second = post_accrued_room_charges(
-                db, reservation, folio, get_current_business_date(db), 1
+                db, reservation, folio, get_current_business_date(db, property_id=reservation.property_id), 1
             )
             db.commit()
 

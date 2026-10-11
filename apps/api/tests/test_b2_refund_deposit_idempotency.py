@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.financial_authority  # noqa: F401
 import app.financial_models  # noqa: F401
@@ -53,6 +53,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([self.user, guest, room_type])
         self.db.flush()
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
 
         room = Room(property_id=self.property.id, number="301", room_type_id=room_type.id, status="occupied")
         reservation = Reservation(property_id=self.property.id, 

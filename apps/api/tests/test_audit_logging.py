@@ -4,7 +4,7 @@ import unittest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.main import write_audit
 from app.models import AuditLog, Role, User
@@ -38,6 +38,8 @@ class AuditLoggingTests(unittest.TestCase):
         self.db.add(self.user)
         self.db.commit()
         self.db.refresh(self.user)
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
+        self.db.commit()
 
     def tearDown(self):
         self.db.rollback()

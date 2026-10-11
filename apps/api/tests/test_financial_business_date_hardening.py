@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.business_date import get_current_business_date
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -26,14 +27,16 @@ class FinancialBusinessDateHardeningTests(unittest.TestCase):
 
     def test_finance_controls_rejects_missing_business_date(self):
         with Session(self.engine) as db:
+            property_ = ensure_test_property(db)
             with self.assertRaises(HTTPException) as context:
-                require_open_business_date(db)
+                require_open_business_date(db, property_.id)
             self.assertEqual(context.exception.status_code, 503)
 
     def test_financial_posting_uses_persisted_business_date(self):
         business_date = date(2026, 9, 10)
         with Session(self.engine) as db:
-            db.add(BusinessDateState(id=1, current_business_date=business_date, opened_at=datetime(2026, 9, 10, 5, 0, 0)))
+            property_ = ensure_test_property(db)
+            db.add(BusinessDateState(property_id=property_.id, current_business_date=business_date, opened_at=datetime(2026, 9, 10, 5, 0, 0)))
             db.commit()
             tx = post_transaction(
                 db,
@@ -44,15 +47,17 @@ class FinancialBusinessDateHardeningTests(unittest.TestCase):
                     {"account": "Revenue - test", "direction": "credit", "amount": Decimal("100.00")},
                 ],
                 idempotency_key="business-date-hardening-1",
+                property_id=property_.id,
             )
             self.assertEqual(tx.business_date, business_date)
 
     def test_financial_posting_rejects_closed_business_date(self):
         business_date = date(2026, 9, 10)
         with Session(self.engine) as db:
+            property_ = ensure_test_property(db)
             db.add(
                 BusinessDateState(
-                    id=1,
+                    property_id=property_.id,
                     current_business_date=business_date,
                     opened_at=datetime(2026, 9, 10, 5, 0, 0),
                     last_closed_business_date=business_date,
@@ -65,6 +70,8 @@ class FinancialBusinessDateHardeningTests(unittest.TestCase):
                     db,
                     transaction_type="test",
                     description="closed-day posting",
+                    property_id=property_.id,
+                    idempotency_key="closed-day-posting",
                     lines=[
                         {"account": "Cash", "direction": "debit", "amount": Decimal("100.00")},
                         {"account": "Revenue - test", "direction": "credit", "amount": Decimal("100.00")},
@@ -75,7 +82,7 @@ class FinancialBusinessDateHardeningTests(unittest.TestCase):
     def test_authoritative_business_date_remains_strict(self):
         with Session(self.engine) as db:
             with self.assertRaises(HTTPException) as context:
-                get_current_business_date(db)
+                get_current_business_date(db, property_id=property_.id)
             self.assertEqual(context.exception.status_code, 503)
 
 

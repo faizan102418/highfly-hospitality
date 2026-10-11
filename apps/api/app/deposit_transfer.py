@@ -67,9 +67,9 @@ def transfer_response(db: Session, tx: FinancialTransaction, key: str, source: S
     }
 
 
-def audit(db: Session, user_id: int, transfer_reference: str, details: dict) -> None:
+def audit(db: Session, property_id: int, user_id: int, transfer_reference: str, details: dict) -> None:
     import json
-    db.add(AuditLog(user_id=user_id, action="deposit_transfer", entity_type="deposit_transfer", entity_id=transfer_reference, details=json.dumps(details)))
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action="deposit_transfer", entity_type="deposit_transfer", entity_id=transfer_reference, details=json.dumps(details)))
 
 
 @router.post("/stays/{stay_id}/deposit-transfers", status_code=201)
@@ -113,7 +113,13 @@ def transfer_deposit(
             raise HTTPException(status_code=409, detail="Idempotency key is already bound to different transfer parameters")
         return transfer_response(db, existing_tx, key, source, destination, amount, True)
 
-    business_date_state = lock_current_business_date(db)
+    source_preview = db.get(Stay, stay_id)
+    if source_preview is None:
+        raise HTTPException(status_code=404, detail="Source stay not found")
+    source_preview_reservation = db.get(Reservation, source_preview.reservation_id)
+    if source_preview_reservation is None:
+        raise HTTPException(status_code=409, detail="Source reservation not found")
+    business_date_state = lock_current_business_date(db, property_id=source_preview_reservation.property_id)
     locked_stays = db.scalars(
         select(Stay)
         .where(Stay.id.in_((stay_id, payload.destination_stay_id)))
@@ -197,7 +203,7 @@ def transfer_deposit(
     db.flush()
     source.deposit_received = stay_deposit_balance(db, source.id)
     destination.deposit_received = stay_deposit_balance(db, destination.id)
-    audit(db, user.id, key, {
+    audit(db, source_reservation.property_id, user.id, key, {
         "transaction_id": tx.id,
         "source_stay_id": source.id,
         "destination_stay_id": destination.id,

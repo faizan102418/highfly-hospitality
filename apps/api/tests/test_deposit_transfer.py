@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -32,6 +32,8 @@ class DepositTransferTests(unittest.TestCase):
         role = Role(id=1, name="admin")
         self.db.add(role)
         self.db.add(User(id=1, username="admin", password_hash="test", role_id=1))
+        self.db.flush()
+        ensure_test_property_access(self.db, 1, self.property.id)
         guest = Guest(property_id=self.property.id, id=1, full_name="Test Guest")
         self.db.add(guest)
         self.db.add(Guest(property_id=self.property.id, id=2, full_name="Destination Guest"))

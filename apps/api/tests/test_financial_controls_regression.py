@@ -210,6 +210,7 @@ class FinancialControlsRegressionTests(unittest.TestCase):
             self.db,
             transaction_type="test",
             description="Test revenue",
+            property_id=self.property.id,
             created_by=self.user.id,
             lines=[
                 {"account": "Cash", "direction": "debit", "amount": Decimal("25.00")},
@@ -312,7 +313,7 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         self.db.commit()
 
         with self.assertRaises(HTTPException):
-            require_open_business_date(self.db)
+            require_open_business_date(self.db, self.property.id)
 
         with self.assertRaises(ValueError):
             post_transaction(

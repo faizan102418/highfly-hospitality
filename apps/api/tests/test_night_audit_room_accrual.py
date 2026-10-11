@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -44,6 +44,8 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         segment = StayRateSegment(id=1, stay_id=1, from_date=date(2026, 9, 13), to_date=date(2026, 9, 15), rate=Decimal("10000.00"), discount_amount=Decimal("0.00"))
         state = BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 13), opened_at=datetime.utcnow())
         self.db.add_all([role, user, room_type, room, guest, reservation, folio, stay, segment, state])
+        self.db.flush()
+        ensure_test_property_access(self.db, user.id, self.property.id)
         self.db.commit()
 
     def tearDown(self):

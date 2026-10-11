@@ -34,7 +34,7 @@ class FinancialAuthorityTests(unittest.TestCase):
         self.db.close()
 
     def post(self, tx_type, lines, reference_id=None):
-        tx = FinancialTransaction(transaction_no=f"TEST-{tx_type}-{reference_id or 'x'}", business_date=date(2026, 9, 8), transaction_type=tx_type, status="posted", reference_type="folio_item" if reference_id else None, reference_id=str(reference_id) if reference_id else None, folio_id=1, description=tx_type)
+        tx = FinancialTransaction(transaction_no=f"TEST-{tx_type}-{reference_id or 'x'}", property_id=self.property.id, business_date=date(2026, 9, 8), transaction_type=tx_type, status="posted", reference_type="folio_item" if reference_id else None, reference_id=str(reference_id) if reference_id else None, folio_id=1, description=tx_type)
         self.db.add(tx)
         self.db.flush()
         for line in lines:

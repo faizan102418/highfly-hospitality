@@ -224,7 +224,7 @@ def adjust_stock(payload: AdjustmentRequest, idempotency_key: str | None = Heade
     key = (idempotency_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required for stock adjustment")
-    business_date = lock_business_date(db)
+    business_date = lock_business_date(db, property_id=property_.id)
     stock = db.scalar(select(StockItem).where(StockItem.id == payload.stock_item_id).with_for_update())
     if stock is None:
         raise HTTPException(status_code=404, detail="Stock item not found")

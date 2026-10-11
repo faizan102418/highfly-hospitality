@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import (
     BusinessDateState,
@@ -42,6 +42,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         guest = Guest(property_id=self.property.id, full_name="POS Guest")
         self.db.add_all([self.user, guest])
         self.db.flush()
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
         reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=self.today, check_out=date(2026, 9, 10), status="checked_in")
         self.db.add(reservation)
         self.db.flush()
@@ -60,6 +61,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
 
     def _make_order(self, *, order_no: str, price: Decimal, quantity: Decimal = Decimal("1"), stock: StockItem | None = None):
         menu = MenuItem(
+            property_id=self.property.id,
             name=f"Menu {order_no}",
             category="food",
             unit_price=price,
@@ -68,7 +70,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         )
         self.db.add(menu)
         self.db.flush()
-        order = RestaurantOrder(order_no=order_no, folio_id=self.folio_id, reservation_id=self.reservation_id, business_date=self.today, created_by=self.user_id)
+        order = RestaurantOrder(property_id=self.property.id, order_no=order_no, folio_id=self.folio_id, reservation_id=self.reservation_id, business_date=self.today, created_by=self.user_id)
         self.db.add(order)
         self.db.flush()
         self.db.add(RestaurantOrderItem(order_id=order.id, menu_item_id=menu.id, description=menu.name, quantity=quantity, unit_price=menu.unit_price, stock_quantity_per_unit=menu.stock_quantity_per_unit))
