@@ -33,6 +33,9 @@ class PostgreSQLSmokeTest(unittest.TestCase):
     def test_ledger_transaction_is_balanced_and_persistent(self):
         with Session(engine) as db:
             property_ = ensure_test_property(db)
+            if db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id)) is None:
+                db.add(BusinessDateState(property_id=property_.id, current_business_date=date.today()))
+                db.flush()
             tx = post_transaction(
                 db,
                 transaction_type="ci_smoke",
