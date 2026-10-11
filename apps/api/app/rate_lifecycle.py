@@ -32,8 +32,7 @@ def business_date(db: Session, *, property_id: int) -> date:
     return state.current_business_date
 
 
-def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    property_id = resolve_authorized_property(db, user_id).id
+def audit(db: Session, property_id: int, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
     db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
@@ -185,7 +184,7 @@ def room_conflict(db: Session, room_id: int, check_in: date, check_out: date, ex
 
 
 @router.get("/reservations/{reservation_id}/stay-overview")
-def reservation_stay_overview(reservation_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+def reservation_stay_overview(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
     property_ = resolve_authorized_property(db, user.id)
     reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation:
@@ -237,7 +236,7 @@ def reservation_stay_overview(reservation_id: int, db: Session = Depends(get_db)
 @router.post("/stays/{stay_id}/folio-windows", status_code=201)
 def create_rate_lifecycle_folio_window(stay_id: int, payload: FolioWindowCreatePayload, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    stay = db.get(Stay, stay_id)
+    stay = db.scalar(select(Stay).join(Reservation, Reservation.id == Stay.reservation_id).where(Stay.id == stay_id, Reservation.property_id == property_.id))
     if not stay:
         raise HTTPException(status_code=404, detail="Stay not found")
     folio_id = db.scalar(select(Folio.id).where(Folio.reservation_id == stay.reservation_id).order_by(Folio.id).limit(1))
@@ -248,14 +247,15 @@ def create_rate_lifecycle_folio_window(stay_id: int, payload: FolioWindowCreateP
     window = StayFolioWindow(folio_id=folio_id, stay_id=stay.id, name=payload.name, payer_type=payload.payer_type, guest_id=payload.guest_id, group_id=payload.group_id, status="open")
     db.add(window)
     db.flush()
-    audit(db, user.id, "folio_window_create", "stay_folio_window", window.id, {"stay_id": stay.id, "name": payload.name, "payer_type": payload.payer_type})
+    audit(db, property_.id, user.id, "folio_window_create", "stay_folio_window", window.id, {"stay_id": stay.id, "name": payload.name, "payer_type": payload.payer_type})
     db.commit()
     return {"id": window.id, "folio_id": window.folio_id, "stay_id": window.stay_id, "name": window.name, "payer_type": window.payer_type, "guest_id": window.guest_id, "group_id": window.group_id, "status": window.status}
 
 
 @router.post("/reservations/{reservation_id}/extend-rate-aware")
 def extend_reservation_rate_aware(reservation_id: int, payload: RateAwareExtension, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.status != "checked_in":
@@ -290,14 +290,15 @@ def extend_reservation_rate_aware(reservation_id: int, payload: RateAwareExtensi
         else:
             append_rate_segment(db, stay, old_checkout, payload.new_check_out, base.rate, base.discount_percent, base.discount_amount, source="extension", rate_plan=base.rate_plan, notes="Carried forward from prior rate segment")
     reservation.check_out = payload.new_check_out
-    audit(db, user.id, "extend_rate_aware", "reservation", reservation.id, {"from_check_out": str(old_checkout), "to_check_out": str(payload.new_check_out), "rate_overrides": [item.model_dump(mode="json") for item in payload.rate_overrides]})
+    audit(db, property_.id, user.id, "extend_rate_aware", "reservation", reservation.id, {"from_check_out": str(old_checkout), "to_check_out": str(payload.new_check_out), "rate_overrides": [item.model_dump(mode="json") for item in payload.rate_overrides]})
     db.commit()
     return {"reservation_id": reservation.id, "old_check_out": old_checkout, "new_check_out": reservation.check_out, "stays": [{"stay_id": stay.id, "check_out": stay.check_out} for stay in stays]}
 
 
 @router.post("/stays/{stay_id}/move-rate-aware", status_code=201)
 def move_stay_rate_aware(stay_id: int, payload: RateAwareRoomMove, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = db.get(Stay, stay_id)
+    property_ = resolve_authorized_property(db, user.id)
+    stay = db.scalar(select(Stay).join(Reservation, Reservation.id == Stay.reservation_id).where(Stay.id == stay_id, Reservation.property_id == property_.id))
     if not stay:
         raise HTTPException(status_code=404, detail="Stay not found")
     if stay.status != "checked_in":
@@ -350,6 +351,6 @@ def move_stay_rate_aware(stay_id: int, payload: RateAwareRoomMove, db: Session =
     stay.room_id = target.id
     source.status = "dirty"
     target.status = "occupied"
-    audit(db, user.id, "move_rate_aware", "stay", stay.id, {"from_room_id": source.id, "to_room_id": target.id, "effective_date": str(move_date), "rate_changed": payload.rate is not None})
+    audit(db, property_.id, user.id, "move_rate_aware", "stay", stay.id, {"from_room_id": source.id, "to_room_id": target.id, "effective_date": str(move_date), "rate_changed": payload.rate is not None})
     db.commit()
     return {"move_id": move.id, "stay_id": stay.id, "from_room_id": source.id, "to_room_id": target.id, "effective_date": move_date, "future_rate": future.rate, "future_discount_amount": future.discount_amount, "future_net_rate": money(future.rate - future.discount_amount)}

@@ -3,8 +3,6 @@ from datetime import date
 
 from sqlalchemy import select
 
-from app.financial_models import InvoiceSequence
-from app.models import BusinessDateState
 from app.tenancy import Organization, Property
 
 
@@ -32,22 +30,6 @@ def ensure_test_property(db):
         )
         db.add(property_)
         db.flush()
-
-    state = db.scalar(
-        select(BusinessDateState).where(BusinessDateState.property_id == property_.id)
-    )
-    if state is None:
-        state = BusinessDateState(
-            property_id=property_.id,
-            current_business_date=date(2026, 9, 9),
-        )
-        db.add(state)
-
-    sequence = db.scalar(
-        select(InvoiceSequence).where(InvoiceSequence.property_id == property_.id)
-    )
-    if sequence is None:
-        db.add(InvoiceSequence(property_id=property_.id, last_number=0))
 
     db.flush()
     return property_
