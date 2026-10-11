@@ -103,6 +103,7 @@ class FinancialIdempotencyTests(unittest.TestCase):
             transaction_type="cash_sale",
             description="Unkeyed sale",
             idempotency_key="   ",
+            property_id=self.property.id,
             lines=[
                 {"account": "Cash", "direction": "debit", "amount": Decimal("10.00")},
                 {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("10.00")},
