@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.main import app  # noqa: F401 - register all API models before creating test metadata
-from app.configuration import BrandingUpdate, SettingsUpdate, _require_organization_access, _require_property_access
+from app.configuration import BrandingUpdate, SettingsUpdate, _require_organization_access, _require_property_access, get_organization_settings, update_organization_settings, get_property_branding, update_property_branding
 from app.db import Base
 from app.models import Role, User
 from app.tenancy import Organization, Property, PropertyUserAccess
@@ -64,6 +64,23 @@ class ConfigurationValidationTests(unittest.TestCase):
             db.commit()
             _require_property_access(db, user, property_)
             _require_organization_access(db, user, org.id)
+
+            updated_settings = update_organization_settings(
+                org.id, SettingsUpdate(settings={"default_language": "en", "booking_policy": "standard"}), db, user
+            )
+            self.assertEqual(updated_settings["settings"]["default_language"], "en")
+            self.assertEqual(get_organization_settings(org.id, db, user)["settings"]["booking_policy"], "standard")
+
+            branding = update_property_branding(
+                property_.id,
+                BrandingUpdate(display_name="Configured Hotel", primary_color="#123ABC", show_logo_on_documents=False),
+                db,
+                user,
+            )
+            self.assertEqual(branding.display_name, "Configured Hotel")
+            self.assertEqual(branding.primary_color, "#123ABC")
+            self.assertFalse(branding.show_logo_on_documents)
+            self.assertEqual(get_property_branding(property_.id, db, user).display_name, "Configured Hotel")
 
 
 if __name__ == "__main__":
