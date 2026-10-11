@@ -103,7 +103,7 @@ class ManagementReportingIntegrityTests(unittest.TestCase):
         self.assertEqual(report["occupancy"]["occupancy_rate"], 50.0)
 
     def test_management_report_uses_ledger_authority_for_revenue(self):
-        report = management_report(self.db)
+        report = management_report(self.db, self.user)
         self.assertEqual(report["revenue"]["room"], Decimal("90.00"))
         self.assertEqual(report["revenue"]["total"], Decimal("90.00"))
         self.assertEqual(report["finance"]["reconciliation_status"], "balanced")
