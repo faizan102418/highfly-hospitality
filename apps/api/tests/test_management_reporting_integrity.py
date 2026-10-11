@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -24,17 +25,18 @@ class ManagementReportingIntegrityTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
 
+        self.property = ensure_test_property(self.db)
         role = Role(name="admin")
         self.db.add(role)
         self.db.flush()
         user = User(username="admin", password_hash="test", role_id=role.id)
-        guest = Guest(full_name="Management Guest")
-        room_type = RoomType(name="Standard", base_rate=100)
+        guest = Guest(property_id=self.property.id, full_name="Management Guest")
+        room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([user, guest, room_type])
         self.db.flush()
-        room_a = Room(number="301", room_type_id=room_type.id, status="occupied")
-        room_b = Room(number="302", room_type_id=room_type.id, status="available")
-        reservation = Reservation(
+        room_a = Room(property_id=self.property.id, number="301", room_type_id=room_type.id, status="occupied")
+        room_b = Room(property_id=self.property.id, number="302", room_type_id=room_type.id, status="available")
+        reservation = Reservation(property_id=self.property.id, 
             guest_id=guest.id,
             check_in=date(2026, 9, 9),
             check_out=date(2026, 9, 10),
@@ -49,7 +51,7 @@ class ManagementReportingIntegrityTests(unittest.TestCase):
         self.db.flush()
         item = FolioItem(folio_id=folio.id, description="Room charge", category="room", quantity=1, unit_price=100, discount=10, created_at=datetime(2026, 9, 1, 10, 0))
         self.db.add(item)
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 9), opened_at=datetime(2026, 9, 9, 8, 0)))
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 9), opened_at=datetime(2026, 9, 9, 8, 0)))
         self.db.commit()
 
         post_transaction(
