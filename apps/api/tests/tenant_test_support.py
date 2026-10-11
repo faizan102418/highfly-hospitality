@@ -3,7 +3,7 @@ from datetime import date
 
 from sqlalchemy import select
 
-from app.tenancy import Organization, Property
+from app.tenancy import Organization, Property, PropertyUserAccess
 
 
 def ensure_test_property(db):
@@ -33,3 +33,26 @@ def ensure_test_property(db):
 
     db.flush()
     return property_
+
+
+def ensure_test_property_access(db, user_id: int, property_id: int):
+    """Grant a test user explicit primary access to a test property."""
+    access = db.scalar(
+        select(PropertyUserAccess).where(
+            PropertyUserAccess.user_id == user_id,
+            PropertyUserAccess.property_id == property_id,
+        )
+    )
+    if access is None:
+        access = PropertyUserAccess(
+            user_id=user_id,
+            property_id=property_id,
+            access_scope="property",
+            is_primary=True,
+        )
+        db.add(access)
+    else:
+        access.is_primary = True
+        access.access_scope = "property"
+    db.flush()
+    return access
