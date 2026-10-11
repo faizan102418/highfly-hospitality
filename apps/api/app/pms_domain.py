@@ -41,8 +41,15 @@ def money(value: Decimal | int | float) -> Decimal:
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict | None = None) -> None:
     import json
-    property_id = resolve_authorized_property(db, user_id).id
-    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details or {})))
+    details = details or {}
+    if entity_type == "reservation":
+        property_id = db.scalar(select(Reservation.property_id).where(Reservation.id == entity_id))
+    else:
+        stay_id = details.get("stay_id") or (entity_id if entity_type == "stay" else None)
+        property_id = db.scalar(select(Reservation.property_id).join(Stay, Stay.reservation_id == Reservation.id).where(Stay.id == stay_id)) if stay_id else None
+    if property_id is None:
+        raise HTTPException(status_code=409, detail="Cannot audit PMS action without property context")
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)) )
 
 
 def ensure_default_rate_segment(db: Session, stay: Stay) -> list[StayRateSegment]:
