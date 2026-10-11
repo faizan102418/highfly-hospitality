@@ -263,7 +263,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         )
         self.db.add_all([deposit_1, deposit_2])
         self.db.flush()
-        post_deposit_received(self.db, stay_id=1, folio_id=1, reservation_id=1, deposit_id=1, amount=Decimal("10000.00"), method="cash", created_by=1, property_id=self.property.id)
+        post_deposit_received(self.db, stay_id=1, folio_id=1, reservation_id=1, deposit_id=1, amount=Decimal("10000.00"), method="cash", created_by=1)
         post_deposit_received(self.db, stay_id=2, folio_id=1, reservation_id=1, deposit_id=2, amount=Decimal("10000.00"), method="cash", created_by=1, property_id=self.property.id)
         self.db.commit()
 
