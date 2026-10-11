@@ -17,7 +17,7 @@ from .financial_models import FolioItemWindow, Invoice, InvoiceSequence, Payment
 from .ledger import post_deposit_received, post_transaction
 from .models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Room, User
 from .pms_core import FolioWindow, Stay
-from .tenancy import resolve_authorized_property
+from .tenancy import Property, resolve_authorized_property
 
 router = APIRouter(prefix="", tags=["financial-operations"])
 MONEY = Decimal("0.01")
@@ -214,8 +214,10 @@ def issue_invoice(folio_id: int, db: Session = Depends(get_db), user: User = Dep
 
 
 @router.get("/ledger/reconciliation")
-def ledger_reconciliation(business_date: date | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    property_ = resolve_authorized_property(db, user.id)
+def ledger_reconciliation(business_date: date | None = None, db: Session = Depends(get_db), user: User | None = Depends(require_roles("admin", "reception")), *, property_id: int | None = None):
+    property_ = resolve_authorized_property(db, user.id) if user is not None else db.get(Property, property_id)
+    if property_ is None:
+        raise HTTPException(status_code=503, detail="An authorized property is required for ledger reconciliation")
     state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
     if state is None: raise HTTPException(status_code=503, detail="Business date is not initialized for this property")
     target_date = business_date or state.current_business_date
