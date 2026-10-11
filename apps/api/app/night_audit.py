@@ -210,6 +210,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
     deposit_received = db.scalar(select(func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date == business_date,
             FinancialTransaction.status == "posted",
             FinancialTransaction.transaction_type == "deposit_received",
@@ -247,6 +248,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
     posting_open = not bool(state and state.last_closed_business_date and state.last_closed_business_date >= business_date)
     return {
         "business_date": business_date,
+        "property_id": property_id,
         "generated_at": datetime.utcnow(),
         "posting_open": posting_open,
         "occupancy": {
@@ -388,7 +390,7 @@ def build_pdf(pack: Path, summary: dict, notes: str | None, closed_by: str, clos
 
 
 def create_pack(summary: dict, notes: str | None, closed_by: str, closed_at: datetime) -> dict[str, str]:
-    pack = pack_dir(summary["business_date"]); files = {"json": build_json(pack, summary, notes, closed_by, closed_at), "xlsx": build_xlsx(pack, summary, notes, closed_by, closed_at), "pdf": build_pdf(pack, summary, notes, closed_by, closed_at)}; return {kind: f.name for kind, f in files.items()}
+    pack = pack_dir(summary["business_date"], summary["property_id"]); files = {"json": build_json(pack, summary, notes, closed_by, closed_at), "xlsx": build_xlsx(pack, summary, notes, closed_by, closed_at), "pdf": build_pdf(pack, summary, notes, closed_by, closed_at)}; return {kind: f.name for kind, f in files.items()}
 
 
 def get_pack_file(business_date: date, filename: str) -> Path:
@@ -413,7 +415,7 @@ def close_day(payload: ClosingConfirm | None = None, db: Session = Depends(get_d
     property_ = resolve_authorized_property(db, user.id)
     state = lock_current_business_date(db, property_id=property_.id); business_date = state.current_business_date
     if state.last_closed_business_date and state.last_closed_business_date >= business_date: raise HTTPException(status_code=409, detail=f"Business date {business_date.isoformat()} is already closed")
-    active_departures = db.scalar(select(func.count(Reservation.id)).where(Reservation.status == "checked_in", Reservation.check_out <= business_date)) or 0
+    active_departures = db.scalar(select(func.count(Reservation.id)).where(Reservation.property_id == property_.id, Reservation.status == "checked_in", Reservation.check_out <= business_date)) or 0
     if active_departures: raise HTTPException(status_code=409, detail="Active departures must be checked out before Night Audit can close the business date")
     accrued_room_charges = accrue_room_charges_for_business_date(db, business_date=business_date, created_by=user.id, property_id=property_.id)
     finance = finance_snapshot(db, business_date, property_.id)
@@ -427,5 +429,6 @@ def close_day(payload: ClosingConfirm | None = None, db: Session = Depends(get_d
 
 
 @router.get("/pack/{business_date}/{filename}")
-def download_pack(business_date: date, filename: str, _: User = Depends(require_roles("admin", "reception"))):
-    path = get_pack_file(business_date, filename); media = {"daily-closing.pdf": "application/pdf", "daily-closing.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "daily-closing.json": "application/json"}[filename]; return FileResponse(path, media_type=media, filename=filename)
+def download_pack(business_date: date, filename: str, user: User = Depends(require_roles("admin", "reception")), db: Session = Depends(get_db)):
+    property_ = resolve_authorized_property(db, user.id)
+    path = get_pack_file(business_date, filename, property_.id); media = {"daily-closing.pdf": "application/pdf", "daily-closing.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "daily-closing.json": "application/json"}[filename]; return FileResponse(path, media_type=media, filename=filename)
