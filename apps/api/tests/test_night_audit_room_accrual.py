@@ -55,7 +55,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
     def test_posts_one_room_night_and_is_idempotent(self):
         business_date = date(2026, 9, 13)
 
-        first = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1, property_id=self.property.id)
+        first = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1)
         self.db.commit()
         self.assertEqual(first, 1)
 
