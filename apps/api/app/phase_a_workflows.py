@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .auth import require_roles
 from .db import get_db
+from .tenancy import resolve_authorized_property
 from .models import (
     AuditLog,
     DepositTransaction,
@@ -86,10 +87,14 @@ def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: i
     db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
-def stay_or_404(db: Session, stay_id: int) -> Stay:
+def stay_or_404(db: Session, stay_id: int, user_id: int) -> Stay:
     stay = db.get(Stay, stay_id)
     if not stay:
         raise HTTPException(status_code=404, detail="Stay not found")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
     return stay
 
 
@@ -164,7 +169,7 @@ def add_occupant_internal(
 
 @router.post("/stays/{stay_id}/occupants", status_code=201)
 def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     occupant = add_occupant_internal(db, stay, payload, user.id)
     db.commit()
     return {"id": occupant.id, "stay_id": occupant.stay_id, "guest_id": occupant.guest_id, "role": occupant.role, "is_primary": occupant.is_primary, "check_in": occupant.check_in, "check_out": occupant.check_out, "notes": occupant.notes}
@@ -172,7 +177,7 @@ def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depen
 
 @router.get("/stays/{stay_id}/deposits")
 def list_stay_deposits(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stay_or_404(db, stay_id)
+    stay_or_404(db, stay_id, _.id)
     rows = db.scalars(select(DepositTransaction).where(DepositTransaction.stay_id == stay_id).order_by(DepositTransaction.id)).all()
     return {"stay_id": stay_id, "balance": deposit_balance(db, stay_id), "transactions": [
         {"id": row.id, "type": row.transaction_type, "amount": row.amount, "folio_id": row.folio_id, "payment_method": row.payment_method, "reference": row.reference, "notes": row.notes, "created_at": row.created_at, "created_by": row.created_by}
@@ -182,7 +187,7 @@ def list_stay_deposits(stay_id: int, db: Session = Depends(get_db), _: User = De
 
 @router.post("/stays/{stay_id}/deposits/receive", status_code=201)
 def receive_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     transaction = DepositTransaction(
         stay_id=stay.id,
         transaction_type="received",
@@ -201,7 +206,7 @@ def receive_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends
 
 @router.post("/stays/{stay_id}/deposits/refund", status_code=201)
 def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     amount = payload.amount.quantize(MONEY)
     balance = deposit_balance(db, stay.id)
     if amount > balance:
@@ -224,8 +229,8 @@ def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(
 
 @router.post("/stays/{stay_id}/deposits/transfer", status_code=201)
 def transfer_deposit(stay_id: int, payload: DepositTransfer, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    source = stay_or_404(db, stay_id)
-    target = stay_or_404(db, payload.target_stay_id)
+    source = stay_or_404(db, stay_id, user.id)
+    target = stay_or_404(db, payload.target_stay_id, user.id)
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Deposit transfer requires a different target stay")
     if source.reservation_id == target.reservation_id:
@@ -244,7 +249,7 @@ def transfer_deposit(stay_id: int, payload: DepositTransfer, db: Session = Depen
 
 @router.post("/stays/{stay_id}/deposits/apply", status_code=201)
 def apply_deposit(stay_id: int, payload: DepositApply, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     folio_id = db.scalar(select(Folio.id).where(Folio.reservation_id == stay.reservation_id).limit(1))
     if folio_id is None:
         raise HTTPException(status_code=409, detail="No folio exists for this reservation")
@@ -261,7 +266,7 @@ def apply_deposit(stay_id: int, payload: DepositApply, db: Session = Depends(get
 
 @router.post("/stays/{stay_id}/move-room", status_code=201)
 def move_checked_in_stay(stay_id: int, payload: MoveRoomRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     if stay.status != "checked_in":
         raise HTTPException(status_code=409, detail="Only checked-in stays can use room move")
     source = db.get(Room, stay.room_id)
