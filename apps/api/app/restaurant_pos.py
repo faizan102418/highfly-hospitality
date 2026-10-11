@@ -407,12 +407,13 @@ def void_posted_order(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id).with_for_update())
+    property_ = resolve_authorized_property(db, user.id)
+    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id).with_for_update())
     if order is None:
         raise HTTPException(status_code=404, detail="Restaurant order not found")
     if order.status != "posted":
         raise HTTPException(status_code=409, detail="Only posted orders can be voided")
-    business_date = get_current_business_date(db)
+    business_date = get_current_business_date(db, property_id=property_.id)
     if order.business_date > business_date:
         raise HTTPException(status_code=409, detail="Restaurant order belongs to a future business date")
 
@@ -485,12 +486,18 @@ def add_pos_payment(
     key = (idempotency_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required for POS payments")
-    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id).with_for_update())
+    property_ = resolve_authorized_property(db, user.id)
+    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id).with_for_update())
     if order is None:
         raise HTTPException(status_code=404, detail="Restaurant order not found")
     if order.status != "posted":
         raise HTTPException(status_code=409, detail="Restaurant order must be posted before payment")
-    folio = db.scalar(select(Folio).where(Folio.id == order.folio_id, Folio.property_id == property_.id).with_for_update())
+    folio = db.scalar(
+        select(Folio)
+        .join(Reservation, Reservation.id == Folio.reservation_id)
+        .where(Folio.id == order.folio_id, Reservation.property_id == property_.id)
+        .with_for_update()
+    )
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Order folio is unavailable")
     existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
