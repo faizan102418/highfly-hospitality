@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
@@ -44,6 +44,7 @@ class PhaseACompletionTests(unittest.TestCase):
         self.user = User(username=f"phase-a-{id(self)}", password_hash="test", role_id=role.id)
         self.db.add(self.user)
         self.db.flush()
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
 
         guests = [Guest(property_id=self.property.id, full_name="Booking Guest"), Guest(property_id=self.property.id, full_name="Ahmed"), Guest(property_id=self.property.id, full_name="Bilal"), Guest(property_id=self.property.id, full_name="Usman")]
         self.db.add_all(guests)
