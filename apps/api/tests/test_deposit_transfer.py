@@ -14,7 +14,7 @@ import app.pms_core  # noqa: F401
 import app.financial_authority  # noqa: F401
 from app.deposit_transfer import DepositTransferCreate, stay_deposit_balance, transfer_deposit
 from app.ledger import post_deposit_received
-from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, Reservation, Role, User
+from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, PropertyUserAccess, Reservation, Role, User
 from app.pms_core import Stay
 
 
@@ -107,6 +107,27 @@ class DepositTransferTests(unittest.TestCase):
         self.assertEqual(self.db.scalar(select(func.count(FinancialTransaction.id)).where(FinancialTransaction.idempotency_key == "deposit-transfer-replay")), 1)
         self.assertEqual(stay_deposit_balance(self.db, 1), Decimal("55.00"))
         self.assertEqual(stay_deposit_balance(self.db, 2), Decimal("25.00"))
+
+    def test_replay_requires_current_property_access(self):
+        transfer_deposit(
+            1,
+            DepositTransferCreate(destination_stay_id=2, amount=Decimal("15.00"), reason="Access check"),
+            idempotency_key="deposit-transfer-replay-auth",
+            db=self.db,
+            user=self.db.get(User, 1),
+        )
+        self.db.commit()
+        self.db.query(PropertyUserAccess).filter_by(user_id=1, property_id=self.property.id).delete()
+        self.db.commit()
+
+        with self.assertRaisesRegex(HTTPException, "No access to the selected property"):
+            transfer_deposit(
+                1,
+                DepositTransferCreate(destination_stay_id=2, amount=Decimal("15.00"), reason="Access check"),
+                idempotency_key="deposit-transfer-replay-auth",
+                db=self.db,
+                user=self.db.get(User, 1),
+            )
 
     def test_reused_idempotency_key_with_different_parameters_is_rejected(self):
         transfer_deposit(
