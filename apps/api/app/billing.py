@@ -26,6 +26,7 @@ from .rate_lifecycle import router as rate_lifecycle_router
 from .reports import router as reports_router
 from .schemas import BillingSummaryResponse, FolioItemCreate, FolioItemResponse, FolioItemUpdate, FolioResponse, PaymentCreate, PaymentResponse
 from .stay_lifecycle import router as stay_lifecycle_router
+from .tenancy import resolve_authorized_property
 from .folio_corrections import router as folio_corrections_router
 
 router = APIRouter(prefix="/api", tags=["billing"])
@@ -76,11 +77,26 @@ def build_folio_response(db: Session, folio: Folio) -> FolioResponse:
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int, details: dict):
     import json
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    if entity_type == "folio":
+        reservation_id = db.scalar(select(Folio.reservation_id).where(Folio.id == entity_id))
+    elif entity_type == "folio_item":
+        reservation_id = db.scalar(select(Folio.reservation_id).join(FolioItem, FolioItem.folio_id == Folio.id).where(FolioItem.id == entity_id))
+    elif entity_type == "payment":
+        reservation_id = db.scalar(select(Folio.reservation_id).join(Payment, Payment.folio_id == Folio.id).where(Payment.id == entity_id))
+    else:
+        reservation_id = None
+    property_id = db.scalar(select(Reservation.property_id).where(Reservation.id == reservation_id)) if reservation_id else None
+    if property_id is None:
+        raise HTTPException(status_code=409, detail="Cannot audit a billing action without property context")
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+
+def property_folio_or_404(db: Session, folio_id: int, property_id: int) -> Folio | None:
+    return db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_id))
 
 @router.get("/billing", response_model=list[BillingSummaryResponse])
-def list_billing(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    rows = db.execute(select(Folio, Reservation, Guest.full_name).join(Reservation, Reservation.id == Folio.reservation_id).join(Guest, Guest.id == Reservation.guest_id).order_by(Folio.id.desc())).all()
+def list_billing(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    rows = db.execute(select(Folio, Reservation, Guest.full_name).join(Reservation, Reservation.id == Folio.reservation_id).join(Guest, Guest.id == Reservation.guest_id).where(Reservation.property_id == property_.id).order_by(Folio.id.desc())).all()
     result = []
     for folio, reservation, guest_name in rows:
         summary = build_folio_response(db, folio)
@@ -88,21 +104,24 @@ def list_billing(db: Session = Depends(get_db), _: User = Depends(require_roles(
     return result
 
 @router.get("/folios/{folio_id}", response_model=FolioResponse)
-def get_folio(folio_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    folio = db.get(Folio, folio_id)
+def get_folio(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    folio = property_folio_or_404(db, folio_id, property_.id)
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     return build_folio_response(db, folio)
 
 @router.get("/reservations/{reservation_id}/folio", response_model=FolioResponse)
-def reservation_folio(reservation_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    if not db.get(Reservation, reservation_id): raise HTTPException(status_code=404, detail="Reservation not found")
+def reservation_folio(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    if not db.scalar(select(Reservation.id).where(Reservation.id == reservation_id, Reservation.property_id == property_.id)): raise HTTPException(status_code=404, detail="Reservation not found")
     folio = db.scalar(select(Folio.id).where(Folio.reservation_id == reservation_id))
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     return build_folio_response(db, db.get(Folio, folio))
 
 @router.get("/folios/{folio_id}/receipt")
-def get_receipt(folio_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    folio = db.get(Folio, folio_id)
+def get_receipt(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    folio = property_folio_or_404(db, folio_id, property_.id)
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     reservation = db.get(Reservation, folio.reservation_id)
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
@@ -115,7 +134,7 @@ def get_receipt(folio_id: int, db: Session = Depends(get_db), _: User = Depends(
 
 @router.post("/folios/{folio_id}/room-charges", response_model=FolioResponse)
 def add_room_charges(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = db.get(Folio, folio_id)
+    folio = property_folio_or_404(db, folio_id, resolve_authorized_property(db, user.id).id)
     if not folio:
         raise HTTPException(status_code=404, detail="Folio not found")
     if folio.status != "open":
@@ -127,7 +146,7 @@ def add_room_charges(folio_id: int, db: Session = Depends(get_db), user: User = 
         db,
         reservation,
         folio,
-        get_current_business_date(db),
+        get_current_business_date(db, property_id=resolve_authorized_property(db, user.id).id),
         user.id,
     )
     if posted:
