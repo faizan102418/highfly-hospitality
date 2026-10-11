@@ -299,7 +299,7 @@ def prior_closing_cash(db: Session, business_date: date, *, property_id: int) ->
     """Return the last closed day's physical cash for carry-forward."""
     state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_id)); prior_date = state.last_closed_business_date if state else None
     if prior_date is None or prior_date >= business_date: return None
-    path = PACK_ROOT / prior_date.isoformat() / "daily-closing.json"
+    path = PACK_ROOT / str(property_id) / prior_date.isoformat() / "daily-closing.json"
     if not path.exists(): return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8")); report = payload.get("report", {})
