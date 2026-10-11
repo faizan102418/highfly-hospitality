@@ -1,0 +1,67 @@
+name: Read-only production migration check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-production-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      HMS_DATABASE_URL: ${{ secrets.PRODUCTION_HMS_DATABASE_URL }}
+    steps:
+      - name: Check required secret is configured
+        run: |
+          if [ -z "$HMS_DATABASE_URL" ]; then
+            echo "::error::Add the PRODUCTION_HMS_DATABASE_URL repository Actions secret before running this workflow."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install API dependencies
+        run: pip install -r requirements.txt
+
+      - name: Display database migration revision (read-only)
+        run: alembic current
+
+      - name: Display migration heads defined in this commit
+        run: alembic heads
+
+      - name: Assert production database is at the code migration head (read-only)
+        run: |
+          python - <<'PY'
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
+          from sqlalchemy import create_engine, text
+          from app.config import settings
+
+          scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+          expected = set(scripts.get_heads())
+          engine = create_engine(settings.database_url, pool_pre_ping=True)
+          try:
+              with engine.connect() as connection:
+                  actual = set(connection.execute(
+                      text("SELECT version_num FROM alembic_version")
+                  ).scalars().all())
+          finally:
+              engine.dispose()
+
+          print("Database revision(s):", ", ".join(sorted(actual)) or "(none)")
+          print("Code migration head(s):", ", ".join(sorted(expected)) or "(none)")
+          if actual != expected:
+              raise SystemExit(
+                  "FAIL: production database revision(s) do not match the migration head(s) in this commit."
+              )
+          print("PASS: production database is at the migration head.")
+          PY
