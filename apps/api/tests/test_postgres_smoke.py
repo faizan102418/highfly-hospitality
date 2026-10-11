@@ -86,6 +86,7 @@ class PostgreSQLSmokeTest(unittest.TestCase):
 
     def test_postgresql_rejects_mixed_currency_ledger_transaction(self):
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             tx = post_transaction(
                 db,
                 transaction_type="ci_currency_guard",
@@ -114,6 +115,7 @@ class PostgreSQLSmokeTest(unittest.TestCase):
 
     def test_ledger_entries_cannot_be_updated_or_deleted(self):
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             tx = post_transaction(
                 db,
                 transaction_type="ci_immutability",
@@ -142,6 +144,7 @@ class PostgreSQLSmokeTest(unittest.TestCase):
 
     def test_financial_transaction_can_only_transition_to_reversed(self):
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             tx = post_transaction(
                 db,
                 transaction_type="ci_reversal",
