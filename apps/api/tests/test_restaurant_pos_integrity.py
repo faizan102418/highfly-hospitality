@@ -70,7 +70,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         )
         self.db.add(menu)
         self.db.flush()
-        order = RestaurantOrder(order_no=order_no, folio_id=self.folio_id, reservation_id=self.reservation_id, business_date=self.today, created_by=self.user_id)
+        order = RestaurantOrder(property_id=self.property.id, order_no=order_no, folio_id=self.folio_id, reservation_id=self.reservation_id, business_date=self.today, created_by=self.user_id)
         self.db.add(order)
         self.db.flush()
         self.db.add(RestaurantOrderItem(order_id=order.id, menu_item_id=menu.id, description=menu.name, quantity=quantity, unit_price=menu.unit_price, stock_quantity_per_unit=menu.stock_quantity_per_unit))
