@@ -89,6 +89,17 @@ def transfer_deposit(
     if stay_id == payload.destination_stay_id:
         raise HTTPException(status_code=400, detail="Source and destination stay must be different")
 
+    # Authorize the source property before looking up an idempotency key. The
+    # replay path returns balances and must enforce the same tenant boundary as
+    # the first execution.
+    source_preview = db.get(Stay, stay_id)
+    if source_preview is None:
+        raise HTTPException(status_code=404, detail="Source stay not found")
+    source_preview_reservation = db.get(Reservation, source_preview.reservation_id)
+    if source_preview_reservation is None:
+        raise HTTPException(status_code=409, detail="Source reservation not found")
+    property_ = resolve_authorized_property(db, user.id, source_preview_reservation.property_id)
+
     existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
     if existing_tx is not None:
         expected_description = f"Deposit transfer {stay_id} → {payload.destination_stay_id}: {payload.reason}"
@@ -103,6 +114,11 @@ def transfer_deposit(
         destination = db.get(Stay, payload.destination_stay_id)
         if not source or not destination:
             raise HTTPException(status_code=404, detail="Source or destination stay not found")
+        source_reservation = db.get(Reservation, source.reservation_id)
+        destination_reservation = db.get(Reservation, destination.reservation_id)
+        if source_reservation is None or destination_reservation is None or source_reservation.property_id != property_.id or destination_reservation.property_id != property_.id:
+            raise HTTPException(status_code=404, detail="Source or destination stay not found")
+        resolve_authorized_property(db, user.id, destination_reservation.property_id)
         amount = money(payload.amount)
         rows = db.scalars(select(DepositTransaction).where(DepositTransaction.reference == key).order_by(DepositTransaction.id)).all()
         if len(rows) != 2:
@@ -114,13 +130,6 @@ def transfer_deposit(
             raise HTTPException(status_code=409, detail="Idempotency key is already bound to different transfer parameters")
         return transfer_response(db, existing_tx, key, source, destination, amount, True)
 
-    source_preview = db.get(Stay, stay_id)
-    if source_preview is None:
-        raise HTTPException(status_code=404, detail="Source stay not found")
-    source_preview_reservation = db.get(Reservation, source_preview.reservation_id)
-    if source_preview_reservation is None:
-        raise HTTPException(status_code=409, detail="Source reservation not found")
-    property_ = resolve_authorized_property(db, user.id, source_preview_reservation.property_id)
     business_date_state = lock_current_business_date(db, property_id=property_.id)
     locked_stays = db.scalars(
         select(Stay)
