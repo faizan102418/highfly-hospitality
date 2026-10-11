@@ -48,8 +48,8 @@ def money(value: Decimal | int | float | str) -> Decimal:
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
-def current_business_date(db: Session) -> date:
-    return get_current_business_date(db)
+def current_business_date(db: Session, *, property_id: int | None = None) -> date:
+    return get_current_business_date(db, property_id=property_id)
 
 
 def new_transaction_no(business_date: date) -> str:
