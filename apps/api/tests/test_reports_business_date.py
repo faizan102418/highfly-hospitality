@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -25,7 +26,9 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
         closed_day = date(2026, 9, 10)
         next_day = date(2026, 9, 11)
         with Session(self.engine) as db:
+            property_ = ensure_test_property(db)
             charge = FinancialTransaction(
+                property_id=property_.id,
                 transaction_no="TX-20260910-TEST1",
                 business_date=closed_day,
                 transaction_type="folio_charge",
@@ -33,6 +36,7 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
                 description="historical room charge",
             )
             payment = FinancialTransaction(
+                property_id=property_.id,
                 transaction_no="TX-20260910-TEST2",
                 business_date=closed_day,
                 transaction_type="folio_payment",
@@ -63,7 +67,9 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
         closed_day = date(2026, 9, 10)
         next_day = date(2026, 9, 11)
         with Session(self.engine) as db:
+            property_ = ensure_test_property(db)
             tx = FinancialTransaction(
+                property_id=property_.id,
                 transaction_no="TX-20260910-TEST3",
                 business_date=closed_day,
                 transaction_type="folio_charge",
