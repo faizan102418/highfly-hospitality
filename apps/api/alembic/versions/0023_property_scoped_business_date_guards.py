@@ -1,6 +1,6 @@
 """Make operational business-date guards tenant-aware.
 
-Revision ID: 0023_property_scoped_business_date_guards
+Revision ID: 0023_property_date_guards
 Revises: 0022_property_config
 """
 
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0023_property_scoped_business_date_guards"
+revision = "0023_property_date_guards"
 down_revision = "0022_property_config"
 branch_labels = None
 depends_on = None
