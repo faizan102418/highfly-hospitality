@@ -190,7 +190,9 @@ def trial_balance(business_date: date | None = None, db: Session = Depends(get_d
 
 @router.get("/reports/payment-reconciliation")
 def payment_reconciliation(business_date: date | None = None, db: Session = Depends(get_db), user: User | None = Depends(require_roles("admin", "reception")), *, property_id: int | None = None):
-    property_ = resolve_authorized_property(db, user.id)
+    property_ = resolve_authorized_property(db, user.id) if user is not None else db.get(Property, property_id)
+    if property_ is None:
+        raise HTTPException(status_code=503, detail="An authorized property is required for financial reporting")
     target = business_date or current_business_date(db, property_.id)
     transactions = db.scalars(select(FinancialTransaction).where(FinancialTransaction.property_id == property_.id, FinancialTransaction.business_date == target, FinancialTransaction.status == "posted", FinancialTransaction.transaction_type.in_(("folio_payment", "payment_refund", "deposit_received", "deposit_refunded")))).all()
     received: dict[str, Decimal] = {}; refunded: dict[str, Decimal] = {}
@@ -202,7 +204,9 @@ def payment_reconciliation(business_date: date | None = None, db: Session = Depe
 
 @router.get("/reports/revenue")
 def revenue_report(business_date: date | None = None, db: Session = Depends(get_db), user: User | None = Depends(require_roles("admin", "reception")), *, property_id: int | None = None):
-    property_ = resolve_authorized_property(db, user.id)
+    property_ = resolve_authorized_property(db, user.id) if user is not None else db.get(Property, property_id)
+    if property_ is None:
+        raise HTTPException(status_code=503, detail="An authorized property is required for financial reporting")
     target = business_date or current_business_date(db, property_.id)
     rows = db.execute(select(LedgerEntry.account, func.coalesce(func.sum(LedgerEntry.amount), 0)).join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id).where(FinancialTransaction.property_id == property_.id, FinancialTransaction.business_date == target, FinancialTransaction.status == "posted", LedgerEntry.direction == "credit", LedgerEntry.account.like("Revenue - %")).group_by(LedgerEntry.account).order_by(LedgerEntry.account)).all()
     lines = [{"account": account, "amount": money(amount)} for account, amount in rows]

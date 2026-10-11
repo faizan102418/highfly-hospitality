@@ -53,7 +53,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
     def test_posts_one_room_night_and_is_idempotent(self):
         business_date = date(2026, 9, 13)
 
-        first = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1, property_id=self.property.id)
+        first = accrue_room_charges_for_business_date(self.db, business_date=business_date, created_by=1)
         self.db.commit()
         self.assertEqual(first, 1)
 
@@ -82,8 +82,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         # 2026-09-13 -> 2026-09-16 is exactly three nights.
         for business_date in (date(2026, 9, 13), date(2026, 9, 14)):
             posted = accrue_room_charges_for_business_date(
-                self.db, business_date=business_date, created_by=1
-            , property_id=self.property.id)
+                self.db, business_date=business_date, created_by=1, property_id=self.property.id)
             self.assertEqual(posted, 1)
             self.db.commit()
 

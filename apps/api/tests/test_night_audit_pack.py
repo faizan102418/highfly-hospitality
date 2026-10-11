@@ -14,6 +14,7 @@ import app.pms_core  # noqa: F401
 from app.finance_controls import payment_reconciliation, revenue_report, trial_balance
 from app.night_audit import build_json, build_summary
 from app.models import BusinessDateState, Role, User
+from app.tenancy import PropertyUserAccess
 
 
 class NightAuditPackTests(unittest.TestCase):
@@ -31,6 +32,8 @@ class NightAuditPackTests(unittest.TestCase):
         self.db.flush()
         self.user = User(username="admin", password_hash="test", role_id=role.id)
         self.db.add(self.user)
+        self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=self.user.id, property_id=self.property.id, access_scope="property", is_primary=True))
         self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime.utcnow()))
         self.db.commit()
 
@@ -60,9 +63,9 @@ class NightAuditPackTests(unittest.TestCase):
             self.assertIn("revenue_reconciliation", text)
 
     def test_underlying_finance_reports_match_empty_period(self):
-        self.assertTrue(trial_balance(date(2026, 9, 8), self.db, None)["balanced"])
-        self.assertEqual(payment_reconciliation(date(2026, 9, 8), self.db, None)["net_total"], 0)
-        self.assertEqual(revenue_report(date(2026, 9, 8), self.db, None)["total"], 0)
+        self.assertTrue(trial_balance(date(2026, 9, 8), self.db, None, property_id=self.property.id)["balanced"])
+        self.assertEqual(payment_reconciliation(date(2026, 9, 8), self.db, None, property_id=self.property.id)["net_total"], 0)
+        self.assertEqual(revenue_report(date(2026, 9, 8), self.db, None, property_id=self.property.id)["total"], 0)
 
 
 if __name__ == "__main__":
