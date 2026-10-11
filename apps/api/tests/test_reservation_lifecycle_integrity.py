@@ -92,8 +92,7 @@ class PostgreSQLReservationLifecycleIntegrityTests(unittest.TestCase):
             db.add(guest)
             db.flush()
             db.add(
-                Reservation(property_id=property_.id, 
-                    property_id=property_.id,
+                Reservation(property_id=property_.id,
                     guest_id=guest.id,
                     check_in=date(2026, 9, 12),
                     check_out=date(2026, 9, 12),
