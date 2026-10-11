@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_authority  # noqa: F401
 import app.financial_models  # noqa: F401
@@ -43,17 +44,18 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
 
+        self.property = ensure_test_property(self.db)
         role = Role(name="admin")
         self.db.add(role)
         self.db.flush()
         self.user = User(username="admin", password_hash="test", role_id=role.id)
-        guest = Guest(full_name="Refund Guest")
-        room_type = RoomType(name="Standard", base_rate=100)
+        guest = Guest(property_id=self.property.id, full_name="Refund Guest")
+        room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([self.user, guest, room_type])
         self.db.flush()
 
-        room = Room(number="301", room_type_id=room_type.id, status="occupied")
-        reservation = Reservation(
+        room = Room(property_id=self.property.id, number="301", room_type_id=room_type.id, status="occupied")
+        reservation = Reservation(property_id=self.property.id, 
             guest_id=guest.id,
             check_in=date(2026, 9, 8),
             check_out=date(2026, 9, 10),
@@ -65,7 +67,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
 
         folio = Folio(reservation_id=reservation.id, status="open")
         self.db.add(folio)
-        self.db.add(BusinessDateState(id=1, current_business_date=date(2026, 9, 8), opened_at=datetime(2026, 9, 8, 8, 0)))
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8), opened_at=datetime(2026, 9, 8, 8, 0)))
         self.db.flush()
 
         stay = Stay(

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.ledger import post_transaction, reverse_transaction
 from app.models import Base, BusinessDateState, FinancialTransaction, LedgerEntry, Role, User
 from app.pms_core import Stay  # noqa: F401 - register the stays table on Base.metadata
@@ -25,6 +26,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
 
         Base.metadata.create_all(self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         self.admin_role = Role(name="admin")
         self.db.add(self.admin_role)
         self.db.flush()
@@ -35,8 +37,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
         )
         self.db.add(self.user)
         self.db.add(
-            BusinessDateState(
-                id=1,
+            BusinessDateState(property_id=self.property.id,
                 current_business_date=date(2026, 9, 15),
                 last_closed_business_date=None,
                 last_closed_at=None,

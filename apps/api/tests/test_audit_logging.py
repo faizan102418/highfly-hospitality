@@ -4,6 +4,7 @@ import unittest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 from app.main import write_audit
 from app.models import AuditLog, Role, User
@@ -20,6 +21,7 @@ class AuditLoggingTests(unittest.TestCase):
 
     def setUp(self):
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         self.db.query(AuditLog).delete()
         self.db.query(User).delete()
         self.db.query(Role).delete()
