@@ -21,6 +21,7 @@ class RateLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.db = Session(self.engine)
         self.property = ensure_test_property(self.db)
+        self.property = ensure_test_property(self.db)
         role = Role(name=f"reception-rate-{id(self)}")
         self.db.add(role)
         guest = Guest(property_id=self.property.id, full_name="Rate Guest")
