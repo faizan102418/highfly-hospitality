@@ -47,6 +47,7 @@ class NightAuditPreviewTests(unittest.TestCase):
         tx = FinancialTransaction(
             id=tx_id,
             transaction_no=f"TEST-{tx_id}",
+            property_id=self.property.id,
             business_date=business_date,
             transaction_type="test",
             status="posted",
@@ -87,13 +88,14 @@ class NightAuditPreviewTests(unittest.TestCase):
 
         after_items = self.db.scalar(select(FolioItem.id))
         self.assertEqual(before_items, after_items)
-        self.assertEqual(len(preview_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13))), 1)
+        self.assertEqual(len(preview_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), property_id=self.property.id)), 1)
         self.assertEqual(self.db.scalar(select(FolioItem.id)), None)
 
     def test_summary_includes_guest_deposit_in_cashier_collections(self):
         tx = FinancialTransaction(
             id=3,
             transaction_no="TEST-3",
+            property_id=self.property.id,
             business_date=date(2026, 9, 13),
             transaction_type="deposit_received",
             status="posted",
