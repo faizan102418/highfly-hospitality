@@ -50,7 +50,7 @@ class FinancialPhaseBTests(unittest.TestCase):
         self.db.rollback(); self.db.close()
 
     def test_reversal_creates_opposite_transaction_without_editing_entries(self):
-        tx = post_transaction(self.db, transaction_type="test", description="Test", created_by=self.user.id, lines=[
+        tx = post_transaction(self.db, transaction_type="test", description="Test", property_id=self.property.id, created_by=self.user.id, lines=[
             {"account": "Cash", "direction": "debit", "amount": Decimal("25.00")},
             {"account": "Revenue - Test", "direction": "credit", "amount": Decimal("25.00")},
         ])
