@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import (
     BusinessDateState,
@@ -42,6 +42,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         guest = Guest(property_id=self.property.id, full_name="POS Guest")
         self.db.add_all([self.user, guest])
         self.db.flush()
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
         reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=self.today, check_out=date(2026, 9, 10), status="checked_in")
         self.db.add(reservation)
         self.db.flush()
@@ -60,6 +61,7 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
 
     def _make_order(self, *, order_no: str, price: Decimal, quantity: Decimal = Decimal("1"), stock: StockItem | None = None):
         menu = MenuItem(
+            property_id=self.property.id,
             name=f"Menu {order_no}",
             category="food",
             unit_price=price,
