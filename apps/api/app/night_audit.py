@@ -86,7 +86,7 @@ def finance_snapshot(db: Session, business_date: date, property_id: int) -> dict
     }
 
 
-def build_summary(db: Session, business_date: date, finance: dict | None = None):
+def build_summary(db: Session, business_date: date, finance: dict | None = None, *, property_id: int):
     # Financial reporting is keyed to the hotel business date, not wall-clock
     # creation timestamps. Folio items/payments may be created later, while
     # their authoritative ledger transaction carries the accounting date.
@@ -98,6 +98,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None)
         )
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date == business_date,
             FinancialTransaction.status.in_(("posted", "reversed")),
             LedgerEntry.account.like("Revenue - %"),
@@ -171,24 +172,27 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None)
     payments_refunded_total = money(sum(payment_refunded_totals.values(), Decimal("0.00")))
     payments_net_total = money(payments_received_total - payments_refunded_total)
 
-    rooms = db.scalars(select(Room)).all()
+    rooms = db.scalars(select(Room).where(Room.property_id == property_id)).all()
     status_counts = {s: 0 for s in ("available", "reserved", "occupied", "dirty", "out_of_order")}
     for room in rooms:
         status_counts[room.status] = status_counts.get(room.status, 0) + 1
     arrivals = db.scalar(select(func.count(Reservation.id)).where(
+        Reservation.property_id == property_id,
         Reservation.check_in == business_date,
         Reservation.status.in_(("reserved", "checked_in")),
     )) or 0
     departures = db.scalar(select(func.count(Reservation.id)).where(
+        Reservation.property_id == property_id,
         Reservation.check_out == business_date,
         Reservation.status == "checked_in",
     )) or 0
-    in_house = db.scalar(select(func.count(Reservation.id)).where(Reservation.status == "checked_in")) or 0
+    in_house = db.scalar(select(func.count(Reservation.id)).where(Reservation.property_id == property_id, Reservation.status == "checked_in")) or 0
     no_shows = db.scalar(select(func.count(Reservation.id)).where(
         Reservation.check_in == business_date,
         Reservation.status == "no_show",
     )) or 0
     expenses = db.scalar(select(func.coalesce(func.sum(Expense.amount), 0)).where(
+        Expense.property_id == property_id,
         Expense.expense_date == business_date,
         Expense.status == "posted",
     )) or Decimal("0.00")
@@ -197,7 +201,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None)
     gross_revenue = money(room_revenue + food_revenue + other_revenue)
     paid_total = money(sum(payment_totals.values(), Decimal("0.00")))
     outstanding = money(sum(
-        (folio_ledger_summary(db, folio.id).balance for folio in db.scalars(select(Folio)).all()),
+        (folio_ledger_summary(db, folio.id).balance for folio in db.scalars(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Reservation.property_id == property_id)).all()),
         Decimal("0.00"),
     ))
 
@@ -235,8 +239,8 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None)
         )) or Decimal("0.00")
     guest_deposit_balance = money(Decimal(deposit_credit) - Decimal(deposit_debit))
 
-    finance = finance or finance_snapshot(db, business_date)
-    state = db.get(BusinessDateState, 1)
+    finance = finance or finance_snapshot(db, business_date, property_id)
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_id))
     posting_open = not bool(state and state.last_closed_business_date and state.last_closed_business_date >= business_date)
     return {
         "business_date": business_date,
@@ -277,8 +281,8 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None)
     }
 
 
-def ledger_account_delta(db: Session, business_date: date, accounts: set[str], before: bool) -> Decimal:
-    query = select(LedgerEntry.direction, func.coalesce(func.sum(LedgerEntry.amount), 0)).join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id).where(LedgerEntry.account.in_(accounts), FinancialTransaction.status.in_(("posted", "reversed")))
+def ledger_account_delta(db: Session, business_date: date, accounts: set[str], before: bool, *, property_id: int) -> Decimal:
+    query = select(LedgerEntry.direction, func.coalesce(func.sum(LedgerEntry.amount), 0)).join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id).where(LedgerEntry.account.in_(accounts), FinancialTransaction.property_id == property_id, FinancialTransaction.status.in_(("posted", "reversed")))
     query = query.where(FinancialTransaction.business_date < business_date) if before else query.where(FinancialTransaction.business_date == business_date)
     rows = db.execute(query.group_by(LedgerEntry.direction)).all()
     debit = sum((Decimal(amount) for direction, amount in rows if direction == "debit"), Decimal("0.00"))
@@ -286,9 +290,9 @@ def ledger_account_delta(db: Session, business_date: date, accounts: set[str], b
     return money(debit - credit)
 
 
-def prior_closing_cash(db: Session, business_date: date) -> Decimal | None:
+def prior_closing_cash(db: Session, business_date: date, *, property_id: int) -> Decimal | None:
     """Return the last closed day's physical cash for carry-forward."""
-    state = db.get(BusinessDateState, 1); prior_date = state.last_closed_business_date if state else None
+    state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_id)); prior_date = state.last_closed_business_date if state else None
     if prior_date is None or prior_date >= business_date: return None
     path = PACK_ROOT / prior_date.isoformat() / "daily-closing.json"
     if not path.exists(): return None
@@ -302,19 +306,19 @@ def prior_closing_cash(db: Session, business_date: date) -> Decimal | None:
     return None
 
 
-def build_pre_close_preview(db: Session, business_date: date, summary: dict) -> dict:
-    pending = preview_room_charges_for_business_date(db, business_date=business_date)
+def build_pre_close_preview(db: Session, business_date: date, summary: dict, *, property_id: int) -> dict:
+    pending = preview_room_charges_for_business_date(db, business_date=business_date, property_id=property_id)
     pending_total = money(sum((row["amount"] for row in pending), Decimal("0.00")))
-    opening_cash = prior_closing_cash(db, business_date)
+    opening_cash = prior_closing_cash(db, business_date, property_id=property_id)
     if opening_cash is None:
-        gross_opening_cash = ledger_account_delta(db, business_date, CASH_ACCOUNTS, True)
-        opening_staff_service_charge = money(max(Decimal("0.00"), -ledger_account_delta(db, business_date, {STAFF_SERVICE_CHARGE_ACCOUNT}, True)))
+        gross_opening_cash = ledger_account_delta(db, business_date, CASH_ACCOUNTS, True, property_id=property_id)
+        opening_staff_service_charge = money(max(Decimal("0.00"), -ledger_account_delta(db, business_date, {STAFF_SERVICE_CHARGE_ACCOUNT}, True, property_id=property_id)))
         opening_cash = money(gross_opening_cash - opening_staff_service_charge)
-    opening_receivables = ledger_account_delta(db, business_date, {"Guest Receivables"}, True)
-    today_cash = ledger_account_delta(db, business_date, CASH_ACCOUNTS, False)
+    opening_receivables = ledger_account_delta(db, business_date, {"Guest Receivables"}, True, property_id=property_id)
+    today_cash = ledger_account_delta(db, business_date, CASH_ACCOUNTS, False, property_id=property_id)
     today_service_charge = money(summary["finance"].get("service_charge_collected", "0.00"))
     today_hotel_cash = money(today_cash - today_service_charge)
-    today_receivables = ledger_account_delta(db, business_date, {"Guest Receivables"}, False)
+    today_receivables = ledger_account_delta(db, business_date, {"Guest Receivables"}, False, property_id=property_id)
     projected_cash = money(opening_cash + today_hotel_cash)
     pending_stay_ids = {row["stay_id"] for row in pending}
     anticipated_deposit_application = money(sum((stay_deposit_balance(db, stay_id) for stay_id in pending_stay_ids), Decimal("0.00")))
@@ -396,8 +400,8 @@ def get_pack_file(business_date: date, filename: str) -> Path:
 def preview(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
     business_date = get_business_date(db, property_.id)
-    summary = build_summary(db, business_date)
-    summary["pre_close"] = build_pre_close_preview(db, business_date, summary)
+    summary = build_summary(db, business_date, property_id=property_.id)
+    summary["pre_close"] = build_pre_close_preview(db, business_date, summary, property_id=property_.id)
     return summary
 
 
@@ -412,7 +416,7 @@ def close_day(payload: ClosingConfirm | None = None, db: Session = Depends(get_d
     finance = finance_snapshot(db, business_date, property_.id)
     if finance["status"] != "balanced":
         db.rollback(); raise HTTPException(status_code=409, detail=serializable({"message": "Financial reconciliation requires review before Night Audit can close", "business_date": business_date, "finance": finance}))
-    summary = build_summary(db, business_date, finance); summary["night_audit"] = {"room_charges_accrued": accrued_room_charges}; summary["pre_close"] = build_pre_close_preview(db, business_date, summary); closed_at = datetime.utcnow(); pack = create_pack(summary, payload.notes if payload else None, user.username, closed_at)
+    summary = build_summary(db, business_date, finance, property_id=property_.id); summary["night_audit"] = {"room_charges_accrued": accrued_room_charges}; summary["pre_close"] = build_pre_close_preview(db, business_date, summary, property_id=property_.id); closed_at = datetime.utcnow(); pack = create_pack(summary, payload.notes if payload else None, user.username, closed_at)
     state.last_closed_at = closed_at; state.last_closed_business_date = business_date; state.current_business_date = business_date + timedelta(days=1); state.opened_at = closed_at
     audit(db, property_.id, user.id, "daily_close", business_date, {"business_date": business_date, "summary": summary, "notes": payload.notes if payload else None, "pack": pack, "closed_by": user.username, "closed_at": closed_at, "next_business_date": state.current_business_date})
     db.commit(); db.refresh(state)
