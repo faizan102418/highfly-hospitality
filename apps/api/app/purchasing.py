@@ -178,7 +178,7 @@ def approve_purchase_order(po_id: int, db: Session = Depends(get_db), user: User
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
     if po["business_date"] != business_date: raise HTTPException(status_code=409, detail="Purchase order belongs to a different business date")
     if po["status"] != "draft": raise HTTPException(status_code=409, detail="Only draft purchase orders can be approved")
-    db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id).values(status="approved", approved_by=user.id, approved_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+    db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).values(status="approved", approved_by=user.id, approved_at=datetime.utcnow(), updated_at=datetime.utcnow()))
     audit(db, user.id, "purchase_order_approved", "purchase_order", po_id, {"business_date": str(business_date)})
     db.commit()
     return build_po(db, dict(db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id)).mappings().one()))
@@ -186,24 +186,26 @@ def approve_purchase_order(po_id: int, db: Session = Depends(get_db), user: User
 
 @router.post("/orders/{po_id}/cancel")
 def cancel_purchase_order(po_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    business_date = lock_business_date(db)
-    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).with_for_update()).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
+    business_date = lock_business_date(db, property_id=property_.id)
     if po["business_date"] != business_date: raise HTTPException(status_code=409, detail="Purchase order belongs to a different business date")
     if po["status"] not in {"draft", "approved"}: raise HTTPException(status_code=409, detail="Only unreceived purchase orders can be cancelled")
     if db.scalar(select(purchase_order_lines.c.id).where(purchase_order_lines.c.purchase_order_id == po_id, purchase_order_lines.c.received_quantity > 0).limit(1)) is not None: raise HTTPException(status_code=409, detail="Purchase order with receipts cannot be cancelled")
-    db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id).values(status="cancelled", updated_at=datetime.utcnow()))
+    db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).values(status="cancelled", updated_at=datetime.utcnow()))
     audit(db, user.id, "purchase_order_cancelled", "purchase_order", po_id, {"business_date": str(business_date)})
     db.commit()
-    return build_po(db, dict(db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id)).mappings().one()))
+    return build_po(db, dict(db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id)).mappings().one()))
 
 
 @router.post("/orders/{po_id}/receive", status_code=201)
 def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    property_ = resolve_authorized_property(db, user.id)
     key = (idempotency_key or "").strip()
     if not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for purchase receipt")
-    business_date = lock_business_date(db)
-    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id).with_for_update()).mappings().first()
+    business_date = lock_business_date(db, property_id=property_.id)
+    po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).with_for_update()).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
     expected = receipt_fingerprint(po_id, business_date, payload.lines, payload.notes)
     existing = db.execute(select(goods_receipts).where(goods_receipts.c.idempotency_key == key).with_for_update()).mappings().first()
@@ -217,7 +219,7 @@ def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key:
     po_lines = {r["id"]: dict(r) for r in db.execute(select(purchase_order_lines).where(purchase_order_lines.c.id.in_(line_ids), purchase_order_lines.c.purchase_order_id == po_id).with_for_update()).mappings().all()}
     if len(po_lines) != len(line_ids): raise HTTPException(status_code=404, detail="One or more purchase order lines were not found")
     stock_ids = [r["stock_item_id"] for r in po_lines.values()]
-    stocks = {s.id: s for s in db.scalars(select(StockItem).where(StockItem.id.in_(stock_ids)).with_for_update()).all()}
+    stocks = {s.id: s for s in db.scalars(select(StockItem).where(StockItem.id.in_(stock_ids), StockItem.property_id == property_.id).with_for_update()).all()}
     if len(stocks) != len(stock_ids): raise HTTPException(status_code=404, detail="One or more stock items were not found")
     for req in payload.lines:
         line = po_lines[req.purchase_order_line_id]
@@ -232,7 +234,7 @@ def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key:
         db.add(StockMovement(stock_item_id=stock.id, business_date=business_date, quantity=incoming, movement_type="purchase_receipt", reference_type="goods_receipt", reference_id=str(receipt["id"]), unit_cost=unit_cost, created_by=user.id))
     refreshed = db.execute(select(purchase_order_lines).where(purchase_order_lines.c.purchase_order_id == po_id)).mappings().all()
     new_status = "received" if all(qty(r["received_quantity"]) == qty(r["ordered_quantity"]) for r in refreshed) else "partially_received"
-    db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id).values(status=new_status, updated_at=datetime.utcnow()))
+    db.execute(update(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).values(status=new_status, updated_at=datetime.utcnow()))
     audit(db, user.id, "purchase_receipt_posted", "goods_receipt", receipt["id"], {"purchase_order_id": po_id, "line_count": len(payload.lines), "business_date": str(business_date)})
     db.commit()
     return {"id": receipt["id"], "grn_no": receipt["grn_no"], "purchase_order_id": po_id, "business_date": business_date, "status": "posted", "replayed": False}
