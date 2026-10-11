@@ -137,6 +137,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
         )
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date == business_date,
             FinancialTransaction.status == "posted",
             FinancialTransaction.transaction_type.in_(
@@ -188,6 +189,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
     )) or 0
     in_house = db.scalar(select(func.count(Reservation.id)).where(Reservation.property_id == property_id, Reservation.status == "checked_in")) or 0
     no_shows = db.scalar(select(func.count(Reservation.id)).where(
+        Reservation.property_id == property_id,
         Reservation.check_in == business_date,
         Reservation.status == "no_show",
     )) or 0
@@ -226,6 +228,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
     deposit_credit = db.scalar(select(func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.status == "posted",
             LedgerEntry.account == "Guest Deposits",
             LedgerEntry.direction == "credit",
@@ -412,7 +415,7 @@ def close_day(payload: ClosingConfirm | None = None, db: Session = Depends(get_d
     if state.last_closed_business_date and state.last_closed_business_date >= business_date: raise HTTPException(status_code=409, detail=f"Business date {business_date.isoformat()} is already closed")
     active_departures = db.scalar(select(func.count(Reservation.id)).where(Reservation.status == "checked_in", Reservation.check_out <= business_date)) or 0
     if active_departures: raise HTTPException(status_code=409, detail="Active departures must be checked out before Night Audit can close the business date")
-    accrued_room_charges = accrue_room_charges_for_business_date(db, business_date=business_date, created_by=user.id)
+    accrued_room_charges = accrue_room_charges_for_business_date(db, business_date=business_date, created_by=user.id, property_id=property_.id)
     finance = finance_snapshot(db, business_date, property_.id)
     if finance["status"] != "balanced":
         db.rollback(); raise HTTPException(status_code=409, detail=serializable({"message": "Financial reconciliation requires review before Night Audit can close", "business_date": business_date, "finance": finance}))
