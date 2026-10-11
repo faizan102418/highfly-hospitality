@@ -105,8 +105,9 @@ def _require_organization_access(db: Session, user: User, organization_id: int) 
         raise HTTPException(status_code=403, detail="Organization-level access required")
 
 
-def _audit(db: Session, user: User, action: str, entity_type: str, entity_id: int, details: dict[str, Any]) -> None:
+def _audit(db: Session, user: User, property_id: int, action: str, entity_type: str, entity_id: int, details: dict[str, Any]) -> None:
     db.add(AuditLog(
+        property_id=property_id,
         user_id=user.id,
         action=action,
         entity_type=entity_type,
@@ -157,7 +158,10 @@ def update_organization_settings(
         else:
             row.setting_value = value
         changed.append(key)
-    _audit(db, user, "update", "organization_settings", organization_id, {"keys": changed})
+    audit_property_id = db.scalar(select(Property.id).join(PropertyUserAccess, PropertyUserAccess.property_id == Property.id).where(Property.organization_id == organization_id, PropertyUserAccess.user_id == user.id).limit(1))
+    if audit_property_id is None:
+        raise HTTPException(status_code=403, detail="No property access for organization audit")
+    _audit(db, user, audit_property_id, "update", "organization_settings", organization_id, {"keys": changed})
     db.commit()
     return get_organization_settings(organization_id, db, user)
 
@@ -208,7 +212,7 @@ def update_property_branding(
     for key, value in supplied.items():
         setattr(branding, key, value)
     after_values = {key: getattr(branding, key) for key in supplied}
-    _audit(db, user, "update", "property_branding", property_id, {
+    _audit(db, user, property_id, "update", "property_branding", property_id, {
         "from": before_values,
         "to": after_values,
     })

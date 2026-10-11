@@ -12,6 +12,7 @@ import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.ledger import post_transaction
 from app.models import BusinessDateState, Folio, FolioItem, Guest, Reservation, ReservationRoom, Role, Room, RoomType, User
+from app.tenancy import PropertyUserAccess
 from app.reports import management_report
 
 
@@ -34,6 +35,8 @@ class ManagementReportingIntegrityTests(unittest.TestCase):
         room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([user, guest, room_type])
         self.db.flush()
+        self.user = user
+        self.db.add(PropertyUserAccess(user_id=user.id, property_id=self.property.id, access_scope="property", is_primary=True))
         room_a = Room(property_id=self.property.id, number="301", room_type_id=room_type.id, status="occupied")
         room_b = Room(property_id=self.property.id, number="302", room_type_id=room_type.id, status="available")
         reservation = Reservation(property_id=self.property.id, 
@@ -92,7 +95,7 @@ class ManagementReportingIntegrityTests(unittest.TestCase):
         self.db.close()
 
     def test_management_report_uses_persisted_business_date(self):
-        report = management_report(self.db)
+        report = management_report(self.db, self.user)
         self.assertEqual(report["business_date"], date(2026, 9, 9))
         self.assertEqual(report["rooms"]["total"], 2)
         self.assertEqual(report["occupancy"]["occupied_room_nights"], 1)

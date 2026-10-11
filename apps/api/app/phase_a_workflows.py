@@ -311,6 +311,7 @@ def split_reservation(reservation_id: int, payload: ReservationSplitRequest, db:
         raise HTTPException(status_code=400, detail="Split date must be inside every selected room stay")
 
     new_reservation = Reservation(
+        property_id=source.property_id,
         guest_id=source.guest_id,
         check_in=payload.to_date,
         check_out=source.check_out,
