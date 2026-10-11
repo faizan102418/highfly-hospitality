@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -34,26 +35,27 @@ class RoomChargeReconciliationTests(unittest.TestCase):
         self.engine.dispose()
 
     def _setup_reservation(self, db: Session, room_numbers=("T1",), check_out=date(2026, 9, 23)):
+        property_ = ensure_test_property(db)
         db.add(
             BusinessDateState(
-                id=1,
+                property_id=property_.id,
                 current_business_date=date(2026, 9, 22),
                 opened_at=datetime(2026, 9, 22, 5, 0, 0),
             )
         )
-        guest = Guest(full_name="Test Guest")
-        room_type = RoomType(name="Test Room", base_rate=Decimal("10000.00"))
+        guest = Guest(property_id=property_.id, full_name="Test Guest")
+        room_type = RoomType(property_id=property_.id, name="Test Room", base_rate=Decimal("10000.00"))
         db.add_all([guest, room_type])
         db.flush()
 
         rooms = []
         for number in room_numbers:
-            room = Room(number=number, room_type_id=room_type.id, status="occupied")
+            room = Room(property_id=property_.id, number=number, room_type_id=room_type.id, status="occupied")
             db.add(room)
             db.flush()
             rooms.append(room)
 
-        reservation = Reservation(
+        reservation = Reservation(property_id=property_.id, 
             guest_id=guest.id,
             check_in=date(2026, 9, 21),
             check_out=check_out,
@@ -290,7 +292,7 @@ class RoomChargeReconciliationTests(unittest.TestCase):
         with Session(self.engine) as db:
             reservation, folio, stays = self._setup_reservation(db)
             first = post_accrued_room_charges(
-                db, reservation, folio, get_current_business_date(db), 1
+                db, reservation, folio, get_current_business_date(db, property_id=reservation.property_id), 1
             )
             db.commit()
 
