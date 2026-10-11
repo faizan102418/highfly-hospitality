@@ -64,6 +64,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
                 transaction_type="integrity-test",
                 description="Unbalanced",
                 created_by=self.user.id,
+                property_id=self.property.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("100.00")},
                     {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("90.00")},
