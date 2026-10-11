@@ -26,6 +26,7 @@ from .financial_authority import folio_ledger_summary, post_folio_charge_authori
 from .folio_integrity import item_has_active_charge
 from .models import AuditLog, BusinessDateState, Expense, FinancialTransaction, Folio, FolioItem, LedgerEntry, Payment, Reservation, Room, User
 from .business_date import get_current_business_date, lock_current_business_date
+from .tenancy import resolve_authorized_property
 from .room_charge_accrual import accrue_room_charges_for_business_date, preview_room_charges_for_business_date
 
 router = APIRouter(prefix="/night-audit", tags=["night-audit"])
@@ -57,19 +58,19 @@ def serializable(value):
     return value
 
 
-def get_business_date(db: Session) -> date:
-    return get_current_business_date(db)
+def get_business_date(db: Session, property_id: int) -> date:
+    return get_current_business_date(db, property_id=property_id)
 
 
-def audit(db: Session, user_id: int, action: str, business_date: date, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type="night_audit", entity_id=business_date.isoformat(), details=json.dumps(serializable(details))))
+def audit(db: Session, property_id: int, user_id: int, action: str, business_date: date, details: dict) -> None:
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type="night_audit", entity_id=business_date.isoformat(), details=json.dumps(serializable(details))))
 
 
-def finance_snapshot(db: Session, business_date: date) -> dict:
-    reconciliation = ledger_reconciliation(business_date, db, None)
-    trial = trial_balance(business_date, db, None)
-    payments = payment_reconciliation(business_date, db, None)
-    revenue = revenue_report(business_date, db, None)
+def finance_snapshot(db: Session, business_date: date, property_id: int) -> dict:
+    reconciliation = ledger_reconciliation(business_date, db, None, property_id=property_id)
+    trial = trial_balance(business_date, db, None, property_id=property_id)
+    payments = payment_reconciliation(business_date, db, None, property_id=property_id)
+    revenue = revenue_report(business_date, db, None, property_id=property_id)
     return {
         "status": reconciliation["reconciliation"]["status"],
         "ledger_balanced": reconciliation["ledger"]["balanced"],
@@ -392,23 +393,28 @@ def get_pack_file(business_date: date, filename: str) -> Path:
 
 
 @router.get("/preview")
-def preview(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    business_date = get_business_date(db); summary = build_summary(db, business_date); summary["pre_close"] = build_pre_close_preview(db, business_date, summary); return summary
+def preview(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = get_business_date(db, property_.id)
+    summary = build_summary(db, business_date)
+    summary["pre_close"] = build_pre_close_preview(db, business_date, summary)
+    return summary
 
 
 @router.post("/close")
 def close_day(payload: ClosingConfirm | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    state = lock_current_business_date(db); business_date = state.current_business_date
+    property_ = resolve_authorized_property(db, user.id)
+    state = lock_current_business_date(db, property_id=property_.id); business_date = state.current_business_date
     if state.last_closed_business_date and state.last_closed_business_date >= business_date: raise HTTPException(status_code=409, detail=f"Business date {business_date.isoformat()} is already closed")
     active_departures = db.scalar(select(func.count(Reservation.id)).where(Reservation.status == "checked_in", Reservation.check_out <= business_date)) or 0
     if active_departures: raise HTTPException(status_code=409, detail="Active departures must be checked out before Night Audit can close the business date")
     accrued_room_charges = accrue_room_charges_for_business_date(db, business_date=business_date, created_by=user.id)
-    finance = finance_snapshot(db, business_date)
+    finance = finance_snapshot(db, business_date, property_.id)
     if finance["status"] != "balanced":
         db.rollback(); raise HTTPException(status_code=409, detail=serializable({"message": "Financial reconciliation requires review before Night Audit can close", "business_date": business_date, "finance": finance}))
     summary = build_summary(db, business_date, finance); summary["night_audit"] = {"room_charges_accrued": accrued_room_charges}; summary["pre_close"] = build_pre_close_preview(db, business_date, summary); closed_at = datetime.utcnow(); pack = create_pack(summary, payload.notes if payload else None, user.username, closed_at)
     state.last_closed_at = closed_at; state.last_closed_business_date = business_date; state.current_business_date = business_date + timedelta(days=1); state.opened_at = closed_at
-    audit(db, user.id, "daily_close", business_date, {"business_date": business_date, "summary": summary, "notes": payload.notes if payload else None, "pack": pack, "closed_by": user.username, "closed_at": closed_at, "next_business_date": state.current_business_date})
+    audit(db, property_.id, user.id, "daily_close", business_date, {"business_date": business_date, "summary": summary, "notes": payload.notes if payload else None, "pack": pack, "closed_by": user.username, "closed_at": closed_at, "next_business_date": state.current_business_date})
     db.commit(); db.refresh(state)
     return {"status": "closed", "business_date": business_date, "next_business_date": state.current_business_date, "summary": summary, "pack": pack, "closed_by": user.username, "closed_at": closed_at, "download_urls": {k: f"/api/night-audit/pack/{business_date.isoformat()}/{v}" for k, v in pack.items()}}
 
