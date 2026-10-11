@@ -81,6 +81,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
                 transaction_type="integrity-test",
                 description="Invalid line",
                 created_by=self.user.id,
+                property_id=self.property.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("100.00")},
                     {"account": "Revenue - Room", "direction": "credit", "amount": Decimal("0.00")},
@@ -96,6 +97,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
             transaction_type="integrity-test",
             description="Existing transaction",
             created_by=self.user.id,
+            property_id=self.property.id,
             idempotency_key="integrity-existing",
             lines=self._balanced_lines("20.00"),
         )
@@ -110,6 +112,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
                     transaction_type="integrity-test",
                     description="Collision",
                     created_by=self.user.id,
+                    property_id=self.property.id,
                     lines=self._balanced_lines("30.00"),
                 )
 
@@ -138,6 +141,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
             transaction_type="integrity-test",
             description="Original",
             created_by=self.user.id,
+            property_id=self.property.id,
             idempotency_key="integrity-reversal-original",
             lines=self._balanced_lines("40.00"),
         )
@@ -196,6 +200,7 @@ class DataIntegrityDestructiveTests(unittest.TestCase):
                 transaction_type="integrity-test",
                 description="Closed date",
                 created_by=self.user.id,
+                property_id=self.property.id,
                 lines=self._balanced_lines("50.00"),
             )
         self.db.rollback()
