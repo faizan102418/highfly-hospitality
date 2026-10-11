@@ -387,7 +387,8 @@ def cancel_order(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "reception")),
 ):
-    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id).with_for_update())
+    property_ = resolve_authorized_property(db, user.id)
+    order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id).with_for_update())
     if order is None:
         raise HTTPException(status_code=404, detail="Restaurant order not found")
     if order.status != "open":
@@ -427,12 +428,13 @@ def void_posted_order(
                 FinancialTransaction.reference_type == "restaurant_order_item",
                 FinancialTransaction.reference_id == str(line.id),
                 FinancialTransaction.status == "posted",
+                FinancialTransaction.property_id == property_.id,
             )
             .order_by(FinancialTransaction.id)
         ).all()
         for tx in transactions:
             reverse_transaction(db, transaction_id=tx.id, created_by=user.id, reason=reason[:300])
-        stock_item_id = db.scalar(select(MenuItem.stock_item_id).where(MenuItem.id == line.menu_item_id))
+        stock_item_id = db.scalar(select(MenuItem.stock_item_id).where(MenuItem.id == line.menu_item_id, MenuItem.property_id == property_.id))
         if stock_item_id and line.stock_quantity_per_unit > 0:
             stock = db.scalar(select(StockItem).where(StockItem.id == stock_item_id, StockItem.property_id == property_.id).with_for_update())
             if stock is None:
@@ -448,6 +450,7 @@ def void_posted_order(
             FinancialTransaction.reference_id == str(order.id),
             FinancialTransaction.transaction_type == "service_charge",
             FinancialTransaction.status == "posted",
+            FinancialTransaction.property_id == property_.id,
         )
     )
     if order_tx:
