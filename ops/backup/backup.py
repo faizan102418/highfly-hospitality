@@ -74,11 +74,30 @@ def database_metadata(database_url: str) -> dict[str, object]:
         with conn.cursor() as cur:
             cur.execute("SELECT current_database(), current_user")
             database_name, database_user = cur.fetchone()
-            cur.execute("SELECT current_business_date FROM business_date_state WHERE id = 1")
-            row = cur.fetchone()
-            if row is None:
-                raise RuntimeError("BusinessDateState singleton row is missing; refusing backup")
-            business_date = row[0]
+            cur.execute(
+                """
+                SELECT p.id, p.name, b.current_business_date
+                FROM properties AS p
+                LEFT JOIN business_date_state AS b ON b.property_id = p.id
+                ORDER BY p.id
+                """
+            )
+            property_dates = cur.fetchall()
+            if not property_dates:
+                raise RuntimeError("No properties are configured; refusing production backup")
+            missing_dates = [row[0] for row in property_dates if row[2] is None]
+            if missing_dates:
+                raise RuntimeError(
+                    "BusinessDateState is missing for property IDs: "
+                    + ", ".join(str(property_id) for property_id in missing_dates)
+                )
+            business_dates = {
+                str(property_id): business_date.isoformat()
+                for property_id, _property_name, business_date in property_dates
+            }
+            # Keep the legacy field for existing manifest consumers. New
+            # verification uses business_dates for every property.
+            business_date = property_dates[0][2]
             cur.execute("SELECT version_num FROM alembic_version")
             versions = [item[0] for item in cur.fetchall()]
             if len(versions) != 1:
@@ -87,6 +106,7 @@ def database_metadata(database_url: str) -> dict[str, object]:
         "database": database_name,
         "database_user": database_user,
         "business_date": business_date.isoformat() if isinstance(business_date, date) else str(business_date),
+        "business_dates": business_dates,
         "alembic_revision": versions[0],
     }
 
@@ -237,12 +257,33 @@ def restore_and_verify(backup_file: Path, manifest_file: Path, target_database_u
 
     with psycopg.connect(target_database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM business_date_state WHERE id = 1")
-            if cur.fetchone()[0] != 1:
-                raise RuntimeError("Restored database is missing the BusinessDateState singleton")
-            cur.execute("SELECT current_business_date FROM business_date_state WHERE id = 1")
-            if cur.fetchone()[0].isoformat() != payload["business_date"]:
-                raise RuntimeError("Restored business date does not match backup manifest")
+            expected_business_dates = payload.get("business_dates")
+            if isinstance(expected_business_dates, dict):
+                cur.execute(
+                    """
+                    SELECT p.id, b.current_business_date
+                    FROM properties AS p
+                    LEFT JOIN business_date_state AS b ON b.property_id = p.id
+                    ORDER BY p.id
+                    """
+                )
+                restored_dates = cur.fetchall()
+                actual_business_dates = {
+                    str(property_id): business_date.isoformat()
+                    for property_id, business_date in restored_dates
+                    if business_date is not None
+                }
+                if len(actual_business_dates) != len(restored_dates):
+                    raise RuntimeError("Restored database has a property without BusinessDateState")
+                if actual_business_dates != expected_business_dates:
+                    raise RuntimeError("Restored property business dates do not match backup manifest")
+            else:
+                # Backward compatibility for manifests created before property
+                # ownership was introduced.
+                cur.execute("SELECT current_business_date FROM business_date_state WHERE id = 1")
+                row = cur.fetchone()
+                if row is None or row[0].isoformat() != payload["business_date"]:
+                    raise RuntimeError("Restored business date does not match legacy backup manifest")
             cur.execute("SELECT version_num FROM alembic_version")
             if cur.fetchone()[0] != payload["alembic_revision"]:
                 raise RuntimeError("Restored Alembic revision does not match backup manifest")

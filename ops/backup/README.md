@@ -35,7 +35,7 @@ python -m ops.backup.backup restore-verify \
   --target-database-url postgresql://hms:hms@127.0.0.1:5432/la_serene_hms_recovery
 ```
 
-The verification is non-destructive to the source database. After restore it checks the BusinessDateState singleton, matches the persisted business date and Alembic revision to the manifest, and rejects any unbalanced posted financial transaction.
+The verification is non-destructive to the source database. After restore it checks that every configured property has a BusinessDateState row, matches each property's persisted business date and the Alembic revision to the manifest, and rejects any unbalanced posted financial transaction. Legacy single-property manifests remain supported.
 
 ## Operational recovery rule
 
