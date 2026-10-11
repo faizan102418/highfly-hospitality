@@ -6,6 +6,7 @@ from sqlalchemy import inspect, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import engine
 from app.models import BusinessDateState, Role, StockItem, User
 from app.purchasing import goods_receipts, purchase_orders
@@ -23,9 +24,10 @@ class PurchasingPostgreSQLGuardTests(unittest.TestCase):
             self.assertIn(name, names)
 
     def _ensure_state_role(self, db):
-        state = db.get(BusinessDateState, 1)
+        property_ = ensure_test_property(db)
+        state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
         if state is None:
-            state = BusinessDateState(id=1, current_business_date=date(2026, 9, 9))
+            state = BusinessDateState(property_id=property_.id, current_business_date=date(2026, 9, 9))
             db.add(state)
         role = db.scalar(select(Role).where(Role.name == "admin"))
         if role is None:

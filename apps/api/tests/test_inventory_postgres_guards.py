@@ -35,6 +35,7 @@ class InventoryPostgreSQLGuardTests(unittest.TestCase):
 
     def test_business_date_guard_rejects_stale_inventory_operation(self):
         with Session(engine) as db:
+            property_ = ensure_test_property(db)
             state, role, property_ = self._ensure_state_and_role(db)
             stock = StockItem(property_id=property_.id, sku="CI-F-GUARD-" + str(id(self)), name="CI F Guard " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
             user = User(username="ci-f-guard-1-" + str(id(self)), password_hash="test", role_id=role.id)
@@ -58,7 +59,7 @@ class InventoryPostgreSQLGuardTests(unittest.TestCase):
     def test_stock_movement_is_immutable(self):
         with Session(engine) as db:
             state, role = self._ensure_state_and_role(db)
-            stock = StockItem(sku="CI-F-GUARD-STOCK-" + str(id(self)), name="CI F Guard Stock " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
+            stock = StockItem(property_id=property_.id, sku="CI-F-GUARD-STOCK-" + str(id(self)), name="CI F Guard Stock " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
             user = User(username="ci-f-guard-user-" + str(id(self)), password_hash="test", role_id=role.id)
             db.add_all([stock, user])
             db.flush()
