@@ -26,6 +26,9 @@ class InventoryPostgreSQLGuardTests(unittest.TestCase):
     def _ensure_state_and_role(self, db):
         property_ = ensure_test_property(db)
         state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
+        if state is None:
+            state = BusinessDateState(property_id=property_.id, current_business_date=date(2026, 9, 9))
+            db.add(state)
         role = db.scalar(select(Role).where(Role.name == "admin"))
         if role is None:
             role = Role(name="admin")
@@ -58,7 +61,7 @@ class InventoryPostgreSQLGuardTests(unittest.TestCase):
 
     def test_stock_movement_is_immutable(self):
         with Session(engine) as db:
-            state, role = self._ensure_state_and_role(db)
+            state, role, property_ = self._ensure_state_and_role(db)
             stock = StockItem(property_id=property_.id, sku="CI-F-GUARD-STOCK-" + str(id(self)), name="CI F Guard Stock " + str(id(self)), unit="unit", on_hand=Decimal("1.000"))
             user = User(username="ci-f-guard-user-" + str(id(self)), password_hash="test", role_id=role.id)
             db.add_all([stock, user])
