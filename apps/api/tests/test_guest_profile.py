@@ -3,6 +3,7 @@ import unittest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -21,9 +22,10 @@ class GuestProfileTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(id=1, name="admin")
         user = User(id=1, username="admin", password_hash="test", role_id=1)
-        guest = Guest(id=1, full_name="Test Guest", phone="03000000000", email="test.guest@example.com", address="Old address", id_document="OLD-ID")
+        guest = Guest(property_id=self.property.id, id=1, full_name="Test Guest", phone="03000000000", email="test.guest@example.com", address="Old address", id_document="OLD-ID")
         self.db.add_all([role, user, guest])
         self.db.commit()
         self.user = user
@@ -61,7 +63,7 @@ class GuestProfileTests(unittest.TestCase):
 
     def test_guest_search_is_limited_at_query_level(self):
         self.db.add_all([
-            Guest(full_name=f"Search Guest {i:02d}", phone=f"03000000{i:03d}")
+            Guest(property_id=self.property.id, full_name=f"Search Guest {i:02d}", phone=f"03000000{i:03d}")
             for i in range(25)
         ])
         self.db.commit()
@@ -79,7 +81,7 @@ class GuestProfileTests(unittest.TestCase):
         self.assertEqual(detail.get("matches", [])[0]["id"], 1)
 
     def test_guest_update_rejects_duplicate_identity(self):
-        self.db.add(Guest(id=2, full_name="Second Guest", phone="03222222222", id_document="SECOND-ID"))
+        self.db.add(Guest(property_id=self.property.id, id=2, full_name="Second Guest", phone="03222222222", id_document="SECOND-ID"))
         self.db.commit()
         payload = GuestCreate(full_name="Updated Guest", phone="03222222222", id_document="NEW-ID")
         with self.assertRaises(Exception) as context:
