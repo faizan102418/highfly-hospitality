@@ -31,6 +31,7 @@ from app.models import (
     User,
 )
 from app.pms_core import Stay
+from app.tenancy import PropertyUserAccess
 
 
 class FinancialControlsRegressionTests(unittest.TestCase):
@@ -53,6 +54,7 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         room_type = RoomType(property_id=self.property.id, name="Standard", base_rate=100)
         self.db.add_all([self.user, guest_a, guest_b, room_type])
         self.db.flush()
+        self.db.add(PropertyUserAccess(user_id=self.user.id, property_id=self.property.id, access_scope="property", is_primary=True))
 
         room_a = Room(property_id=self.property.id, number="201", room_type_id=room_type.id, status="occupied")
         room_b = Room(property_id=self.property.id, number="202", room_type_id=room_type.id, status="occupied")
