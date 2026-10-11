@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -30,6 +30,8 @@ class FolioItemCorrectionTests(unittest.TestCase):
         self.db.add(Guest(property_id=self.property.id, id=1, full_name="Test Guest"))
         self.db.add(Reservation(property_id=self.property.id, id=1, guest_id=1, check_in=date(2026, 9, 11), check_out=date(2026, 9, 12), status="checked_in"))
         self.db.add(Folio(id=1, reservation_id=1, status="open"))
+        self.db.flush()
+        ensure_test_property_access(self.db, 1, self.property.id)
         self.db.commit()
 
     def tearDown(self):
