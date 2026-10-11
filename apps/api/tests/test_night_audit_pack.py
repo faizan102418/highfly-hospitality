@@ -39,7 +39,7 @@ class NightAuditPackTests(unittest.TestCase):
         self.db.close()
 
     def test_financial_pack_contains_trial_balance_payment_and_revenue_sections(self):
-        summary = build_summary(self.db, date(2026, 9, 8, property_id=self.property.id))
+        summary = build_summary(self.db, date(2026, 9, 8), property_id=self.property.id)
         finance = summary["finance"]
         self.assertIn("trial_balance", finance)
         self.assertIn("payment_reconciliation", finance)
@@ -51,7 +51,7 @@ class NightAuditPackTests(unittest.TestCase):
         self.assertEqual(finance["revenue_reconciliation"]["difference"], 0)
 
     def test_closing_json_embeds_finance_controls(self):
-        summary = build_summary(self.db, date(2026, 9, 8, property_id=self.property.id))
+        summary = build_summary(self.db, date(2026, 9, 8), property_id=self.property.id)
         with tempfile.TemporaryDirectory() as tmp:
             path = build_json(Path(tmp), summary, "no variance", self.user.username, datetime.utcnow())
             text = path.read_text(encoding="utf-8")

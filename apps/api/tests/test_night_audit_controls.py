@@ -48,7 +48,7 @@ class NightAuditControlTests(unittest.TestCase):
 
     def test_night_audit_uses_controlled_business_date(self):
         self.assertEqual(get_business_date(self.db, self.property.id), date(2026, 9, 8))
-        summary = build_summary(self.db, get_business_date(self.db, self.property.id, property_id=self.property.id))
+        summary = build_summary(self.db, get_business_date(self.db, self.property.id), property_id=self.property.id)
         self.assertEqual(summary["business_date"], date(2026, 9, 8))
         self.assertTrue(summary["posting_open"])
         self.assertEqual(summary["finance"]["status"], "balanced")
@@ -60,7 +60,7 @@ class NightAuditControlTests(unittest.TestCase):
         state.last_closed_business_date = date(2026, 9, 8)
         state.last_closed_at = datetime(2026, 9, 8, 23, 59, 0)
         self.db.commit()
-        summary = build_summary(self.db, date(2026, 9, 8, property_id=self.property.id))
+        summary = build_summary(self.db, date(2026, 9, 8), property_id=self.property.id)
         self.assertFalse(summary["posting_open"])
 
     def test_close_atomically_rolls_business_date_forward(self):

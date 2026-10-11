@@ -204,7 +204,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
             ])
         self.db.commit()
 
-        summary = build_summary(self.db, date(2026, 9, 13, property_id=self.property.id))
+        summary = build_summary(self.db, date(2026, 9, 13), property_id=self.property.id)
         self.assertEqual(summary["payments"]["received_total"], Decimal("150.00"))
         self.assertEqual(summary["payments"]["refunded_total"], Decimal("30.00"))
         self.assertEqual(summary["payments"]["net_total"], Decimal("120.00"))
@@ -262,11 +262,11 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         )
         self.db.add_all([deposit_1, deposit_2])
         self.db.flush()
-        post_deposit_received(self.db, stay_id=1, folio_id=1, reservation_id=1, deposit_id=1, amount=Decimal("10000.00"), method="cash", created_by=1)
-        post_deposit_received(self.db, stay_id=2, folio_id=1, reservation_id=1, deposit_id=2, amount=Decimal("10000.00"), method="cash", created_by=1)
+        post_deposit_received(self.db, stay_id=1, folio_id=1, reservation_id=1, deposit_id=1, amount=Decimal("10000.00"), method="cash", created_by=1, property_id=self.property.id)
+        post_deposit_received(self.db, stay_id=2, folio_id=1, reservation_id=1, deposit_id=2, amount=Decimal("10000.00"), method="cash", created_by=1, property_id=self.property.id)
         self.db.commit()
 
-        posted = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1)
+        posted = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1, property_id=self.property.id)
         self.assertEqual(posted, 2)
         self.db.commit()
 
@@ -292,7 +292,7 @@ class NightAuditRoomAccrualTests(unittest.TestCase):
         )).all()
         self.assertEqual(sum((Decimal(entry.amount) for entry in cash_entries), Decimal("0.00")), Decimal("20000.00"))
 
-        repeated = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1)
+        repeated = accrue_room_charges_for_business_date(self.db, business_date=date(2026, 9, 13), created_by=1, property_id=self.property.id)
         self.assertEqual(repeated, 0)
 
 
