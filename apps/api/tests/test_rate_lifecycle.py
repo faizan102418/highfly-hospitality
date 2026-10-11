@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models import BusinessDateState, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayRateSegment, User
+from tenant_test_support import ensure_test_property
 from app.pms_core import Stay
 from app.rate_lifecycle import RateAwareExtension, RateAwareRoomMove, RateOverride, business_date, extend_reservation_rate_aware, move_stay_rate_aware
 
@@ -19,21 +20,22 @@ class RateLifecycleTests(unittest.TestCase):
 
     def setUp(self):
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name=f"reception-rate-{id(self)}")
         self.db.add(role)
-        guest = Guest(full_name="Rate Guest")
+        guest = Guest(property_id=self.property.id, full_name="Rate Guest")
         self.db.add(guest)
         self.db.flush()
         user = User(username=f"rate-{id(self)}", password_hash="test", role_id=role.id)
         self.db.add(user)
-        room_type = RoomType(name=f"RateRoom-{guest.id}", base_rate=120)
+        room_type = RoomType(property_id=self.property.id, name=f"RateRoom-{guest.id}", base_rate=120)
         self.db.add(room_type)
         self.db.flush()
-        room_a = Room(number=f"RA-{guest.id}", room_type_id=room_type.id, status="occupied")
-        room_b = Room(number=f"RB-{guest.id}", room_type_id=room_type.id, status="available")
+        room_a = Room(property_id=self.property.id, number=f"RA-{guest.id}", room_type_id=room_type.id, status="occupied")
+        room_b = Room(property_id=self.property.id, number=f"RB-{guest.id}", room_type_id=room_type.id, status="available")
         self.db.add_all([room_a, room_b])
         self.db.flush()
-        reservation = Reservation(guest_id=guest.id, check_in=date(2026, 9, 7), check_out=date(2026, 9, 12), status="checked_in")
+        reservation = Reservation(property_id=self.property.id, guest_id=guest.id, check_in=date(2026, 9, 7), check_out=date(2026, 9, 12), status="checked_in")
         self.db.add(reservation)
         self.db.flush()
         folio = Folio(reservation_id=reservation.id, status="open")
@@ -45,9 +47,9 @@ class RateLifecycleTests(unittest.TestCase):
         self.db.flush()
         self.db.add(StayRateSegment(stay_id=stay.id, from_date=date(2026, 9, 7), to_date=date(2026, 9, 12), rate=Decimal("120.00"), discount_percent=Decimal("10.00"), discount_amount=Decimal("12.00"), source="reservation"))
 
-        business_date_state = self.db.get(BusinessDateState, 1)
+        business_date_state = self.db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == self.property.id))
         if business_date_state is None:
-            business_date_state = BusinessDateState(id=1, current_business_date=date(2026, 9, 8))
+            business_date_state = BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8))
             self.db.add(business_date_state)
         else:
             business_date_state.current_business_date = date(2026, 9, 8)
@@ -89,7 +91,7 @@ class RateLifecycleTests(unittest.TestCase):
         self.assertEqual(self.db.get(Room, self.room_b.id).status, "occupied")
 
     def test_business_date_is_deterministic_for_rate_operations(self):
-        self.assertEqual(business_date(self.db), date(2026, 9, 8))
+        self.assertEqual(business_date(self.db, property_id=self.property.id), date(2026, 9, 8))
 
 
 if __name__ == "__main__":
