@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.db import DATA_DIR, SessionLocal
 from app.models import AuditLog, BusinessDateState, Expense, Role, User
 from app.night_audit import build_pre_close_preview, build_summary, create_pack
+from app.tenancy import resolve_authorized_property
 
 TARGET_DATE = date(2026, 9, 15)
 OPENING_CASH = Decimal("45176.00")
@@ -43,14 +44,6 @@ def expense_signature(expenses: list[Expense]) -> set[tuple[str, Decimal, str]]:
 def main() -> None:
     db = SessionLocal()
     try:
-        state = db.get(BusinessDateState, 1)
-        if state is None:
-            fail("Business date state is missing")
-        if state.current_business_date != date(2026, 9, 16):
-            fail(f"Safety stop: expected current business date 2026-09-16, found {state.current_business_date}")
-        if state.last_closed_business_date != TARGET_DATE:
-            fail(f"Safety stop: expected 2026-09-15 to be the last closed business date, found {state.last_closed_business_date}")
-
         admin = db.scalar(
             select(User)
             .join(Role, Role.id == User.role_id)
@@ -60,9 +53,18 @@ def main() -> None:
         )
         if admin is None:
             fail("No admin user found")
+        property_ = resolve_authorized_property(db, admin.id)
+        state = db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == property_.id))
+        if state is None:
+            fail("Business date state is missing for the selected property")
+        if state.current_business_date != date(2026, 9, 16):
+            fail(f"Safety stop: expected current business date 2026-09-16, found {state.current_business_date}")
+        if state.last_closed_business_date != TARGET_DATE:
+            fail(f"Safety stop: expected 2026-09-15 to be the last closed business date, found {state.last_closed_business_date}")
 
         existing_expenses = db.scalars(
             select(Expense).where(
+                Expense.property_id == property_.id,
                 Expense.expense_date == TARGET_DATE,
                 Expense.status == "posted",
             )
@@ -87,6 +89,7 @@ def main() -> None:
         transport_created = False
         if transport is None:
             transport = Expense(
+                property_id=property_.id,
                 description="Transport Expense",
                 amount=TRANSPORT_AMOUNT,
                 payment_method="Cash",
@@ -106,6 +109,7 @@ def main() -> None:
 
         db.add(
             AuditLog(
+                property_id=property_.id,
                 user_id=admin.id,
                 action="historical_reconciliation",
                 entity_type="daily_closing",
@@ -128,8 +132,8 @@ def main() -> None:
         )
         db.commit()
 
-        summary = build_summary(db, TARGET_DATE)
-        summary["pre_close"] = build_pre_close_preview(db, TARGET_DATE, summary)
+        summary = build_summary(db, TARGET_DATE, property_id=property_.id)
+        summary["pre_close"] = build_pre_close_preview(db, TARGET_DATE, summary, property_id=property_.id)
 
         # The historical Excel closing is the source of truth for the closed 2026-09-15 pack.
         # Do not create financial transactions dated in a closed period: PostgreSQL explicitly
