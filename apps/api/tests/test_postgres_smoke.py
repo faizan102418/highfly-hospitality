@@ -33,11 +33,13 @@ class PostgreSQLSmokeTest(unittest.TestCase):
     def test_ledger_transaction_is_balanced_and_persistent(self):
         with Session(engine) as db:
             property_ = ensure_test_property(db)
+            property_ = ensure_test_property(db)
             tx = post_transaction(
                 db,
                 transaction_type="ci_smoke",
                 description="CI PostgreSQL ledger smoke test",
                 created_by=None,
+                property_id=property_.id,
                 property_id=property_.id,
                 lines=[
                     {"account": "Cash", "direction": "debit", "amount": Decimal("10.00")},
