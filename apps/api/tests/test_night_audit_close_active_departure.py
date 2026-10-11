@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
@@ -21,6 +22,7 @@ class NightAuditCloseActiveDepartureTests(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         self.business_date = date(2026, 9, 11)
         self.state = SimpleNamespace(
             current_business_date=self.business_date, last_closed_business_date=None,
@@ -33,11 +35,11 @@ class NightAuditCloseActiveDepartureTests(unittest.TestCase):
         self.db.close()
 
     def add_active_reservation(self, check_out: date):
-        guest = Guest(full_name="Night Audit Test Guest")
+        guest = Guest(property_id=self.property.id, full_name="Night Audit Test Guest")
         self.db.add(guest)
         self.db.flush()
 
-        reservation = Reservation(
+        reservation = Reservation(property_id=self.property.id, 
             guest_id=guest.id,
             check_in=date(2026, 9, 10),
             check_out=check_out,

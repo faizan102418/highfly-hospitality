@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from tenant_test_support import ensure_test_property
 from app.db import Base
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
@@ -38,17 +39,18 @@ class PhaseAWorkflowTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
+        self.property = ensure_test_property(self.db)
         role = Role(name="reception")
         self.db.add(role); self.db.flush()
         self.user = User(username="reception", password_hash="test", role_id=role.id)
-        self.booking_guest = Guest(full_name="Booking Guest")
-        self.occupant_a = Guest(full_name="Ahmed")
-        self.occupant_b = Guest(full_name="Bilal")
-        self.occupant_c = Guest(full_name="Usman")
-        rt = RoomType(name="Standard", base_rate=12000)
-        self.room1 = Room(number="101", room_type_id=1, status="available")
-        self.room2 = Room(number="102", room_type_id=1, status="available")
-        self.room3 = Room(number="103", room_type_id=1, status="available")
+        self.booking_guest = Guest(property_id=self.property.id, full_name="Booking Guest")
+        self.occupant_a = Guest(property_id=self.property.id, full_name="Ahmed")
+        self.occupant_b = Guest(property_id=self.property.id, full_name="Bilal")
+        self.occupant_c = Guest(property_id=self.property.id, full_name="Usman")
+        rt = RoomType(property_id=self.property.id, name="Standard", base_rate=12000)
+        self.room1 = Room(property_id=self.property.id, number="101", room_type_id=1, status="available")
+        self.room2 = Room(property_id=self.property.id, number="102", room_type_id=1, status="available")
+        self.room3 = Room(property_id=self.property.id, number="103", room_type_id=1, status="available")
         self.db.add_all([self.user, self.booking_guest, self.occupant_a, self.occupant_b, self.occupant_c, rt]); self.db.flush()
         for room in (self.room1, self.room2, self.room3): room.room_type_id = rt.id
         self.db.add_all([self.room1, self.room2, self.room3]); self.db.commit()
@@ -58,7 +60,7 @@ class PhaseAWorkflowTests(unittest.TestCase):
 
     def make_reservation(self, status="reserved", check_in=date(2026, 9, 8), check_out=date(2026, 9, 13), rooms=None):
         rooms = rooms or [self.room1]
-        reservation = Reservation(guest_id=self.booking_guest.id, check_in=check_in, check_out=check_out, status=status)
+        reservation = Reservation(property_id=self.property.id, guest_id=self.booking_guest.id, check_in=check_in, check_out=check_out, status=status)
         self.db.add(reservation); self.db.flush()
         self.db.add(Folio(reservation_id=reservation.id, status="open"))
         for room in rooms:
