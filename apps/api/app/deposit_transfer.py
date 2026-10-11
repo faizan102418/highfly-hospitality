@@ -14,6 +14,7 @@ from .db import get_db
 from .ledger import post_transaction
 from .models import AuditLog, DepositTransaction, FinancialTransaction, Folio, LedgerEntry, Reservation, User
 from .pms_core import Stay
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api", tags=["deposit-transfers"])
 MONEY = Decimal("0.01")
@@ -119,7 +120,8 @@ def transfer_deposit(
     source_preview_reservation = db.get(Reservation, source_preview.reservation_id)
     if source_preview_reservation is None:
         raise HTTPException(status_code=409, detail="Source reservation not found")
-    business_date_state = lock_current_business_date(db, property_id=source_preview_reservation.property_id)
+    property_ = resolve_authorized_property(db, user.id, source_preview_reservation.property_id)
+    business_date_state = lock_current_business_date(db, property_id=property_.id)
     locked_stays = db.scalars(
         select(Stay)
         .where(Stay.id.in_((stay_id, payload.destination_stay_id)))
@@ -136,6 +138,9 @@ def transfer_deposit(
     destination_reservation = db.get(Reservation, destination.reservation_id)
     if not source_reservation or not destination_reservation:
         raise HTTPException(status_code=409, detail="Source or destination reservation not found")
+    if source_reservation.property_id != property_.id or destination_reservation.property_id != property_.id:
+        raise HTTPException(status_code=404, detail="Source or destination stay not found")
+    resolve_authorized_property(db, user.id, destination_reservation.property_id)
 
     source_folio = db.scalar(select(Folio).where(Folio.reservation_id == source.reservation_id))
     destination_folio = db.scalar(select(Folio).where(Folio.reservation_id == destination.reservation_id))
