@@ -234,6 +234,12 @@ def add_payment(folio_id: int, payload: PaymentCreate, idempotency_key: str | No
             raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
         persisted_key = scoped_idempotency_key(property_.id, normalized_key)
         existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == persisted_key))
+        if existing is None:
+            # Safely replay pre-property-scoping keys only within this property.
+            existing = db.scalar(select(FinancialTransaction).where(
+                FinancialTransaction.idempotency_key == normalized_key,
+                FinancialTransaction.property_id == property_.id,
+            ))
         if existing:
             if existing.transaction_type != "folio_payment" or existing.folio_id != folio_id:
                 raise HTTPException(status_code=409, detail="Idempotency key is already bound to a different financial transaction")
