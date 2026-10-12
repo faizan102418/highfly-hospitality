@@ -104,13 +104,13 @@ def lock_business_date(db: Session, *, property_id: int) -> date:
     return state.current_business_date
 
 
-def build_operation_response(row, stock: StockItem, expected_fingerprint: str, replayed: bool) -> dict:
+def build_operation_response(row, stock: StockItem, expected_fingerprint: str, replayed: bool, external_key: str) -> dict:
     if row["idempotency_fingerprint"] != expected_fingerprint:
         raise HTTPException(status_code=409, detail="Idempotency key is already bound to a different inventory operation")
     return {
         "id": row["id"],
         "operation_no": row["operation_no"],
-        "idempotency_key": row["idempotency_key"],
+        "idempotency_key": external_key,
         "business_date": row["business_date"],
         "operation_type": row["operation_type"],
         "stock_item_id": row["stock_item_id"],
@@ -127,15 +127,37 @@ def audit(db: Session, user_id: int, action: str, operation_id: int, details: di
     db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type="stock_operation", entity_id=str(operation_id), details=json.dumps(details)))
 
 
-def find_existing(db: Session, key: str):
-    return db.execute(select(stock_operations).where(stock_operations.c.idempotency_key == key).with_for_update()).mappings().first()
+def scoped_idempotency_key(property_id: int, key: str) -> str:
+    # Store a fixed-width tenant namespace while keeping the caller's key in the API.
+    return sha256(f"{property_id}:{key}".encode()).hexdigest()
+
+
+def find_existing(db: Session, key: str, property_id: int):
+    scoped_key = scoped_idempotency_key(property_id, key)
+    existing = db.execute(
+        select(stock_operations).where(stock_operations.c.idempotency_key == scoped_key).with_for_update()
+    ).mappings().first()
+    if existing is not None:
+        return existing
+    # Backward compatibility for operations written before keys were tenant-scoped.
+    # Only consider a legacy raw key if its stock item belongs to this property.
+    return db.execute(
+        select(stock_operations)
+        .join(StockItem, StockItem.id == stock_operations.c.stock_item_id)
+        .where(
+            stock_operations.c.idempotency_key == key,
+            StockItem.property_id == property_id,
+        )
+        .with_for_update()
+    ).mappings().first()
 
 
 def create_operation(db: Session, user: User, stock: StockItem, business_date: date, operation_type: str, quantity: Decimal, unit_cost: Decimal, reason: str, idempotency_key: str) -> dict:
     expected = fingerprint(operation_type, stock.id, quantity, unit_cost, reason, business_date)
-    existing = find_existing(db, idempotency_key)
+    stored_key = scoped_idempotency_key(stock.property_id, idempotency_key)
+    existing = find_existing(db, idempotency_key, stock.property_id)
     if existing is not None:
-        return build_operation_response(existing, stock, expected, True)
+        return build_operation_response(existing, stock, expected, True, idempotency_key)
 
     quantity = qty(quantity)
     unit_cost = money(unit_cost)
@@ -152,7 +174,7 @@ def create_operation(db: Session, user: User, stock: StockItem, business_date: d
     result = db.execute(
         insert(stock_operations).values(
             operation_no=f"STK-{business_date.strftime('%Y%m%d')}-{token_hex(4).upper()}",
-            idempotency_key=idempotency_key,
+            idempotency_key=stored_key,
             idempotency_fingerprint=expected,
             business_date=business_date,
             operation_type=operation_type,
@@ -170,13 +192,13 @@ def create_operation(db: Session, user: User, stock: StockItem, business_date: d
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        existing = find_existing(db, idempotency_key)
+        existing = find_existing(db, idempotency_key, stock.property_id)
         if existing is not None:
             stock = db.get(StockItem, existing["stock_item_id"])
-            return build_operation_response(existing, stock, expected, True)
+            return build_operation_response(existing, stock, expected, True, idempotency_key)
         raise HTTPException(status_code=409, detail="Inventory operation could not be committed") from exc
     stock = db.get(StockItem, stock.id)
-    return build_operation_response(result, stock, expected, False)
+    return build_operation_response(result, stock, expected, False, idempotency_key)
 
 
 @router.get("/stock-items")
