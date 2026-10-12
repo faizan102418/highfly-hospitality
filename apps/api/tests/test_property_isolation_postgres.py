@@ -8,7 +8,18 @@ from sqlalchemy.orm import Session
 
 from app.db import engine
 from app.models import Folio, Guest, Reservation, Role, Room, RoomType, User
-from app.billing import get_folio
+from app.billing import (
+    add_folio_deposit,
+    add_folio_item,
+    add_payment,
+    close_folio,
+    get_folio,
+    FolioDepositCreate,
+    remove_folio_item,
+    update_folio_item,
+)
+from app.schemas import FolioItemCreate, FolioItemUpdate, PaymentCreate
+from app.models import FolioItem
 from datetime import date
 from app.tenancy import Organization, Property, PropertyUserAccess, resolve_authorized_property
 from app.pms_core import Stay
@@ -128,6 +139,35 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as folio_denied:
                 get_folio(other_folio.id, db, user)
             self.assertEqual(folio_denied.exception.status_code, 404)
+
+            foreign_item = FolioItem(
+                folio_id=other_folio.id,
+                description="Foreign charge",
+                category="other",
+                quantity=Decimal("1.00"),
+                unit_price=Decimal("100.00"),
+                discount=Decimal("0.00"),
+            )
+            db.add(foreign_item)
+            db.flush()
+            original_description = foreign_item.description
+            original_item_count = db.scalar(select(FolioItem.id).where(FolioItem.folio_id == other_folio.id))
+            denied_calls = (
+                lambda: add_folio_item(other_folio.id, FolioItemCreate(description="Unauthorized", category="other", unit_price=Decimal("10.00")), db, user),
+                lambda: update_folio_item(other_folio.id, foreign_item.id, FolioItemUpdate(description="Tampered", category="other", quantity=Decimal("1"), unit_price=Decimal("1")), db, user),
+                lambda: remove_folio_item(other_folio.id, foreign_item.id, db, user),
+                lambda: add_payment(other_folio.id, PaymentCreate(amount=Decimal("1.00"), method="cash"), None, db, user),
+                lambda: add_folio_deposit(other_folio.id, FolioDepositCreate(amount=Decimal("1.00"), method="cash"), db, user),
+                lambda: close_folio(other_folio.id, db, user),
+            )
+            for call in denied_calls:
+                with self.subTest(call=call):
+                    with self.assertRaises(HTTPException) as mutation_denied:
+                        call()
+                    self.assertEqual(mutation_denied.exception.status_code, 404)
+            db.flush()
+            self.assertEqual(foreign_item.description, original_description)
+            self.assertEqual(db.scalar(select(FolioItem.id).where(FolioItem.folio_id == other_folio.id)), original_item_count)
             db.rollback()
 
 
