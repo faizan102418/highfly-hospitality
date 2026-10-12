@@ -188,6 +188,17 @@ class PurchasingIntegrityTests(unittest.TestCase):
         line_id = other_po["lines"][0]["id"]
 
         primary_po = approve_purchase_order(self.po["id"], self.db, self.user)
+        with self.assertRaises(HTTPException) as denied:
+            receive_purchase_order(
+                other_po["id"],
+                ReceiveRequest(lines=[ReceiveLine(
+                    purchase_order_line_id=line_id, quantity=Decimal("1.000"),
+                )]),
+                "foreign-po-key", self.db, self.user,
+            )
+        self.assertEqual(denied.exception.status_code, 404)
+        self.assertEqual(self.db.get(StockItem, other_stock.id).on_hand, Decimal("6.000"))
+
         first = receive_purchase_order(
             primary_po["id"],
             ReceiveRequest(lines=[ReceiveLine(
