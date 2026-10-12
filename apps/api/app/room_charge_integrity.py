@@ -8,6 +8,7 @@ from sqlalchemy import Integer, and_, cast, or_, select
 from sqlalchemy.orm import Session
 
 from .financial_authority import post_folio_charge_authoritative
+from .ledger import scoped_idempotency_key
 from .models import FinancialTransaction, Folio, FolioItem, LedgerEntry, Reservation, Room, StayRateSegment
 from .pms_core import Stay
 
@@ -168,7 +169,7 @@ def post_accrued_room_charges(
         room_charge_key = f"room-night:{folio.id}:{stay.id}:{business_date.isoformat()}"
         existing = db.scalar(
             select(FinancialTransaction.id).where(
-                FinancialTransaction.idempotency_key == room_charge_key,
+                FinancialTransaction.idempotency_key == scoped_idempotency_key(reservation.property_id, room_charge_key),
                 FinancialTransaction.status == "posted",
             )
         )
