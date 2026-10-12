@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .business_date import get_current_business_date, lock_current_business_date
 from .db import get_db
-from .ledger import post_transaction
+from .ledger import post_transaction, scoped_idempotency_key
 from .models import AuditLog, DepositTransaction, FinancialTransaction, Folio, LedgerEntry, Reservation, User
 from .pms_core import Stay
 from .tenancy import resolve_authorized_property
@@ -100,7 +100,7 @@ def transfer_deposit(
         raise HTTPException(status_code=409, detail="Source reservation not found")
     property_ = resolve_authorized_property(db, user.id, source_preview_reservation.property_id)
 
-    existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
+    existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(property_.id, key)))
     if existing_tx is not None:
         expected_description = f"Deposit transfer {stay_id} → {payload.destination_stay_id}: {payload.reason}"
         if (
@@ -120,7 +120,7 @@ def transfer_deposit(
             raise HTTPException(status_code=404, detail="Source or destination stay not found")
         resolve_authorized_property(db, user.id, destination_reservation.property_id)
         amount = money(payload.amount)
-        rows = db.scalars(select(DepositTransaction).where(DepositTransaction.reference == key).order_by(DepositTransaction.id)).all()
+        rows = db.scalars(select(DepositTransaction).where(DepositTransaction.reference == key, DepositTransaction.stay_id.in_((source.id, destination.id))).order_by(DepositTransaction.id)).all()
         if len(rows) != 2:
             raise HTTPException(status_code=409, detail="Idempotent deposit transfer exists but its operational records are incomplete")
         if {row.stay_id for row in rows} != {source.id, destination.id}:
@@ -186,7 +186,7 @@ def transfer_deposit(
         db.rollback()
         raise HTTPException(status_code=409, detail="Deposit transfer could not be committed safely; retry with the same Idempotency-Key") from exc
 
-    rows = db.scalars(select(DepositTransaction).where(DepositTransaction.reference == key).order_by(DepositTransaction.id)).all()
+    rows = db.scalars(select(DepositTransaction).where(DepositTransaction.reference == key, DepositTransaction.stay_id.in_((source.id, destination.id))).order_by(DepositTransaction.id)).all()
     if rows:
         if len(rows) != 2:
             db.rollback()
