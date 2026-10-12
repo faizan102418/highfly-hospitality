@@ -187,10 +187,11 @@ class PurchasingIntegrityTests(unittest.TestCase):
         other_po = approve_purchase_order(other_po["id"], self.db, other_user)
         line_id = other_po["lines"][0]["id"]
 
+        primary_po = approve_purchase_order(self.po["id"], self.db, self.user)
         first = receive_purchase_order(
-            self.po["id"],
+            primary_po["id"],
             ReceiveRequest(lines=[ReceiveLine(
-                purchase_order_line_id=self.po["lines"][0]["id"], quantity=Decimal("2.000"),
+                purchase_order_line_id=primary_po["lines"][0]["id"], quantity=Decimal("2.000"),
             )]),
             "shared-receipt-key", self.db, self.user,
         )
