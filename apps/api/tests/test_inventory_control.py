@@ -118,6 +118,14 @@ class InventoryControlTests(unittest.TestCase):
         ))
         self.db.commit()
 
+        with self.assertRaises(HTTPException) as denied:
+            receive_stock(
+                ReceiveRequest(stock_item_id=other_stock.id, quantity=Decimal("2.000"), unit_cost=Decimal("5.00")),
+                "foreign-stock-key", self.db, self.user,
+            )
+        self.assertEqual(denied.exception.status_code, 404)
+        self.assertEqual(self.db.get(StockItem, other_stock.id).on_hand, Decimal("7.000"))
+
         first = receive_stock(
             ReceiveRequest(stock_item_id=self.stock.id, quantity=Decimal("2.000"), unit_cost=Decimal("5.00")),
             "shared-client-key", self.db, self.user,
