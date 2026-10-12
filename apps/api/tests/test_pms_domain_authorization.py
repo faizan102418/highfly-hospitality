@@ -10,11 +10,16 @@ from app.db import Base
 from app.models import Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User, DepositTransaction
 from app.pms_core import Stay
 from app.pms_domain import (
+    DepositCreate,
     OccupantCreate,
+    RateSegmentCreate,
     ReservationSplitCreate,
     RoomMoveCreate,
     add_stay_occupant,
+    create_deposit,
+    create_rate_segment,
     list_deposits,
+    list_rate_segments,
     list_stay_occupants,
     move_stay_room,
     split_reservation,
@@ -100,8 +105,11 @@ class PMSDomainAuthorizationTests(unittest.TestCase):
 
         checks = (
             lambda: list_stay_occupants(self.stay.id, self.db, self.user),
+            lambda: list_rate_segments(self.stay.id, self.db, self.user),
             lambda: list_deposits(self.stay.id, self.db, self.user),
             lambda: add_stay_occupant(self.stay.id, OccupantCreate(guest_id=self.guest.id), self.db, self.user),
+            lambda: create_rate_segment(self.stay.id, RateSegmentCreate(from_date=date(2026, 10, 1), to_date=date(2026, 10, 2), rate=Decimal("100.00")), self.db, self.user),
+            lambda: create_deposit(self.stay.id, DepositCreate(transaction_type="received", amount=Decimal("10.00")), self.db, self.user),
             lambda: move_stay_room(self.stay.id, RoomMoveCreate(to_room_id=self.target_room.id), self.db, self.user),
             lambda: split_reservation(self.reservation.id, ReservationSplitCreate(room_ids=[self.room.id]), self.db, self.user),
         )
