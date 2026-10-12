@@ -3,16 +3,18 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import create_engine, select
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
-from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
+from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
     DepositApplyCreate,
     DepositRefundCreate,
     DepositTransferCreate,
     FolioItemRouteCreate,
+    FolioItemRouting,
     FolioWindowUpdatePayload,
     OccupantGuestChange,
     StayCheckInPayload,
@@ -27,6 +29,7 @@ from app.phase_a_completion import (
 )
 from app.pms_core import Stay
 from app.stay_lifecycle import StayFolioWindow
+from app.tenancy import Organization, Property
 
 
 class PhaseACompletionTests(unittest.TestCase):
@@ -140,6 +143,56 @@ class PhaseACompletionTests(unittest.TestCase):
         updated = update_folio_window(self.stay.id, self.window.id, FolioWindowUpdatePayload(name="Incidentals", status="closed"), self.db, self.user)
         self.assertEqual(updated["name"], "Incidentals")
         self.assertEqual(updated["status"], "closed")
+
+    def test_folio_item_routing_rejects_cross_property_window_without_side_effects(self):
+        other_property = ensure_test_property(self.db)
+        other_guest = Guest(property_id=other_property.id, full_name="Other Property Guest")
+        self.db.add(other_guest)
+        other_room_type = RoomType(property_id=other_property.id, name=f"OtherType-{id(self)}", base_rate=100)
+        self.db.add(other_room_type)
+        self.db.flush()
+        other_room = Room(property_id=other_property.id, number=f"OTHER-{id(self)}", room_type_id=other_room_type.id, status="available")
+        self.db.add(other_room)
+        self.db.flush()
+        other_reservation = Reservation(property_id=other_property.id, guest_id=other_guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
+        self.db.add(other_reservation)
+        self.db.flush()
+        other_folio = Folio(reservation_id=other_reservation.id, status="open")
+        self.db.add(other_folio)
+        self.db.flush()
+        other_stay = Stay(reservation_id=other_reservation.id, room_id=other_room.id, guest_id=other_guest.id, status="reserved", check_in=other_reservation.check_in, check_out=other_reservation.check_out, agreed_rate=Decimal("100.00"))
+        self.db.add(other_stay)
+        self.db.flush()
+        other_window = StayFolioWindow(folio_id=other_folio.id, stay_id=other_stay.id, name="Other property", payer_type="guest", guest_id=other_guest.id, status="open")
+        item = FolioItem(folio_id=self.folio.id, stay_id=self.stay.id, description="Minibar", category="minibar", quantity=Decimal("1"), unit_price=Decimal("20.00"), discount=Decimal("0.00"))
+        self.db.add_all([other_window, item])
+        self.db.commit()
+        self.db.refresh(item)
+        self.db.refresh(other_window)
+        before_audits = self.db.query(AuditLog).count()
+        with self.assertRaises(HTTPException) as raised:
+            route_folio_item(item.id, FolioItemRouteCreate(window_id=other_window.id), self.db, self.user)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIsNone(self.db.scalar(select(FolioItemRouting).where(FolioItemRouting.folio_item_id == item.id)))
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+
+    def test_folio_window_rejects_guest_from_another_property_without_side_effects(self):
+        other_organization = Organization(name=f"Foreign Org {id(self)}", slug=f"foreign-org-{id(self)}")
+        self.db.add(other_organization)
+        self.db.flush()
+        foreign_property = Property(organization_id=other_organization.id, name="Foreign Property", code=f"FOREIGN-{id(self)}", slug=f"foreign-property-{id(self)}", timezone="UTC", currency="PKR")
+        self.db.add(foreign_property)
+        self.db.flush()
+        foreign_guest = Guest(property_id=foreign_property.id, full_name="Foreign Payer")
+        self.db.add(foreign_guest)
+        self.db.commit()
+        before_name = self.window.name
+        before_audits = self.db.query(AuditLog).count()
+        with self.assertRaises(HTTPException) as raised:
+            update_folio_window(self.stay.id, self.window.id, FolioWindowUpdatePayload(name="Should not apply", guest_id=foreign_guest.id), self.db, self.user)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(self.db.get(StayFolioWindow, self.window.id).name, before_name)
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
 
 
 if __name__ == "__main__":

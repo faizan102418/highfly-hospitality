@@ -15,7 +15,7 @@ from .db import Base, get_db
 from .tenancy import resolve_authorized_property
 from .ledger import post_transaction
 from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, Room, StayOccupant, User
-from .pms_core import Stay
+from .pms_core import GroupReservation, Stay
 from .stay_lifecycle import StayFolioWindow
 
 router = APIRouter(prefix="", tags=["phase-a-completion"])
@@ -274,8 +274,30 @@ def update_folio_window(stay_id: int, window_id: int, payload: FolioWindowUpdate
         raise HTTPException(status_code=404, detail="Folio window not found for this stay")
     if payload.payer_type is not None and payload.payer_type not in {"guest", "group", "company", "other"}:
         raise HTTPException(status_code=400, detail="Invalid payer type")
-    if payload.guest_id is not None and not db.get(Guest, payload.guest_id):
-        raise HTTPException(status_code=400, detail="Window payer guest does not exist")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    folio = db.get(Folio, window.folio_id)
+    if folio is None or folio.reservation_id != reservation.id:
+        raise HTTPException(status_code=409, detail="Folio window does not belong to this stay's reservation")
+    if payload.guest_id is not None:
+        guest = db.get(Guest, payload.guest_id)
+        if guest is None:
+            raise HTTPException(status_code=400, detail="Window payer guest does not exist")
+        if guest.property_id != reservation.property_id:
+            raise HTTPException(status_code=400, detail="Window payer guest belongs to a different property")
+    effective_group_id = payload.group_id if payload.group_id is not None else window.group_id
+    if effective_group_id is not None:
+        group_link = db.scalar(
+            select(GroupReservation.group_id).where(
+                GroupReservation.group_id == effective_group_id,
+                GroupReservation.reservation_id == reservation.id,
+            )
+        )
+        if group_link is None:
+            raise HTTPException(status_code=400, detail="Window payer group is not linked to this reservation")
+    if payload.payer_type == "group" and effective_group_id is None:
+        raise HTTPException(status_code=400, detail="Group payer requires a group linked to this reservation")
     if payload.status == "closed" and window.status == "closed":
         raise HTTPException(status_code=409, detail="Folio window is already closed")
     if payload.name is not None:
@@ -298,9 +320,20 @@ def route_folio_item(item_id: int, payload: FolioItemRouteCreate, db: Session = 
     item = db.get(FolioItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Folio item not found")
+    source_folio = db.get(Folio, item.folio_id)
+    source_reservation = db.get(Reservation, source_folio.reservation_id) if source_folio else None
+    if source_folio is None or source_reservation is None:
+        raise HTTPException(status_code=404, detail="Folio item not found")
+    resolve_authorized_property(db, user.id, source_reservation.property_id)
     window = db.get(StayFolioWindow, payload.window_id)
     if not window:
         raise HTTPException(status_code=404, detail="Folio window not found")
+    target_stay = db.get(Stay, window.stay_id)
+    target_reservation = db.get(Reservation, target_stay.reservation_id) if target_stay else None
+    if target_stay is None or target_reservation is None:
+        raise HTTPException(status_code=404, detail="Folio window not found")
+    if target_reservation.id != source_reservation.id or target_reservation.property_id != source_reservation.property_id:
+        raise HTTPException(status_code=409, detail="Folio window belongs to a different reservation or property")
     if window.status != "open":
         raise HTTPException(status_code=409, detail="Folio window is closed")
     if item.folio_id != window.folio_id:
