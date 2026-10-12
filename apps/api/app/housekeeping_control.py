@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .db import Base, get_db
 from .inventory import lock_business_date
-from .tenancy import resolve_authorized_property
+from .tenancy import PropertyUserAccess, resolve_authorized_property
 from .models import AuditLog, Reservation, ReservationRoom, Room, User
 
 router = APIRouter(tags=["housekeeping-control"])
@@ -120,16 +120,20 @@ def room_occupied_or_reserved(db: Session, room_id: int) -> bool:
     ) is not None
 
 
-def require_room(db: Session, room_id: int) -> Room:
-    room = db.scalar(select(Room).where(Room.id == room_id).with_for_update())
+def require_room(db: Session, room_id: int, property_id: int | None = None) -> Room:
+    stmt = select(Room).where(Room.id == room_id)
+    if property_id is not None:
+        stmt = stmt.where(Room.property_id == property_id)
+    room = db.scalar(stmt.with_for_update())
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return room
 
 
 @router.get("/housekeeping/tasks")
-def list_housekeeping_tasks(status: str | None = None, room_id: int | None = None, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stmt = select(housekeeping_tasks).order_by(housekeeping_tasks.c.id.desc()).limit(500)
+def list_housekeeping_tasks(status: str | None = None, room_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    stmt = select(housekeeping_tasks).join(Room, Room.id == housekeeping_tasks.c.room_id).where(Room.property_id == property_.id).order_by(housekeeping_tasks.c.id.desc()).limit(500)
     if status:
         stmt = stmt.where(housekeeping_tasks.c.status == status)
     if room_id is not None:
@@ -141,7 +145,7 @@ def list_housekeeping_tasks(status: str | None = None, room_id: int | None = Non
 def create_task(room_id: int, payload: HousekeepingTaskCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "housekeeping"))):
     property_ = resolve_authorized_property(db, user.id)
     business_date = lock_business_date(db, property_id=property_.id)
-    room = require_room(db, room_id)
+    room = require_room(db, room_id, property_.id)
     if active_maintenance(db, room.id):
         raise HTTPException(status_code=409, detail="Room has an active maintenance block")
     if room.status not in ("dirty", "available"):
@@ -154,10 +158,11 @@ def create_task(room_id: int, payload: HousekeepingTaskCreate, db: Session = Dep
 
 @router.post("/housekeeping/tasks/{task_id}/assign")
 def assign_task(task_id: int, payload: TaskAssign, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "housekeeping"))):
-    task = db.execute(select(housekeeping_tasks).where(housekeeping_tasks.c.id == task_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    task = db.execute(select(housekeeping_tasks).join(Room, Room.id == housekeeping_tasks.c.room_id).where(housekeeping_tasks.c.id == task_id, Room.property_id == property_.id).with_for_update()).mappings().first()
     if not task:
         raise HTTPException(status_code=404, detail="Housekeeping task not found")
-    assignee = db.get(User, payload.assigned_to)
+    assignee = db.execute(select(User).join(PropertyUserAccess, PropertyUserAccess.user_id == User.id).where(User.id == payload.assigned_to, PropertyUserAccess.property_id == property_.id)).scalar_one_or_none()
     if not assignee:
         raise HTTPException(status_code=404, detail="Assigned user not found")
     if task["status"] not in ("pending", "in_progress"):
@@ -170,8 +175,9 @@ def assign_task(task_id: int, payload: TaskAssign, db: Session = Depends(get_db)
 
 @router.post("/housekeeping/tasks/{task_id}/start")
 def start_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "housekeeping"))):
-    business_date = lock_business_date(db)
-    task = db.execute(select(housekeeping_tasks).where(housekeeping_tasks.c.id == task_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    task = db.execute(select(housekeeping_tasks).join(Room, Room.id == housekeeping_tasks.c.room_id).where(housekeeping_tasks.c.id == task_id, Room.property_id == property_.id).with_for_update()).mappings().first()
     if not task:
         raise HTTPException(status_code=404, detail="Housekeeping task not found")
     if task["business_date"] != business_date:
@@ -192,8 +198,9 @@ def start_task(task_id: int, db: Session = Depends(get_db), user: User = Depends
 
 @router.post("/housekeeping/tasks/{task_id}/complete")
 def complete_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "housekeeping"))):
-    business_date = lock_business_date(db)
-    task = db.execute(select(housekeeping_tasks).where(housekeeping_tasks.c.id == task_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    task = db.execute(select(housekeeping_tasks).join(Room, Room.id == housekeeping_tasks.c.room_id).where(housekeeping_tasks.c.id == task_id, Room.property_id == property_.id).with_for_update()).mappings().first()
     if not task:
         raise HTTPException(status_code=404, detail="Housekeeping task not found")
     if task["business_date"] != business_date:
@@ -216,8 +223,9 @@ def complete_task(task_id: int, db: Session = Depends(get_db), user: User = Depe
 
 
 @router.get("/maintenance/blocks")
-def list_maintenance_blocks(status: str | None = None, room_id: int | None = None, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stmt = select(maintenance_blocks).order_by(maintenance_blocks.c.id.desc()).limit(500)
+def list_maintenance_blocks(status: str | None = None, room_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    stmt = select(maintenance_blocks).join(Room, Room.id == maintenance_blocks.c.room_id).where(Room.property_id == property_.id).order_by(maintenance_blocks.c.id.desc()).limit(500)
     if status:
         stmt = stmt.where(maintenance_blocks.c.status == status)
     if room_id is not None:
@@ -227,8 +235,9 @@ def list_maintenance_blocks(status: str | None = None, room_id: int | None = Non
 
 @router.post("/maintenance/rooms/{room_id}/blocks", status_code=201)
 def create_maintenance_block(room_id: int, payload: MaintenanceCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    business_date = lock_business_date(db)
-    room = require_room(db, room_id)
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    room = require_room(db, room_id, property_.id)
     if room.status in ("occupied", "reserved") or room_occupied_or_reserved(db, room.id):
         raise HTTPException(status_code=409, detail="Occupied or reserved rooms cannot be maintenance-blocked")
     if active_maintenance(db, room.id):
@@ -247,15 +256,16 @@ def create_maintenance_block(room_id: int, payload: MaintenanceCreate, db: Sessi
 
 @router.post("/maintenance/blocks/{block_id}/resolve")
 def resolve_maintenance_block(block_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    business_date = lock_business_date(db)
-    block = db.execute(select(maintenance_blocks).where(maintenance_blocks.c.id == block_id).with_for_update()).mappings().first()
+    property_ = resolve_authorized_property(db, user.id)
+    business_date = lock_business_date(db, property_id=property_.id)
+    block = db.execute(select(maintenance_blocks).join(Room, Room.id == maintenance_blocks.c.room_id).where(maintenance_blocks.c.id == block_id, Room.property_id == property_.id).with_for_update()).mappings().first()
     if not block:
         raise HTTPException(status_code=404, detail="Maintenance block not found")
     if block["status"] != "active":
         raise HTTPException(status_code=409, detail="Maintenance block is already resolved")
     if block["business_date"] != business_date:
         raise HTTPException(status_code=409, detail="Maintenance block belongs to a different business date")
-    room = require_room(db, block["room_id"])
+    room = require_room(db, block["room_id"], property_.id)
     if room.status != "out_of_order":
         raise HTTPException(status_code=409, detail="Room status is out of sync with active maintenance block")
     now = datetime.utcnow()
@@ -268,8 +278,9 @@ def resolve_maintenance_block(block_id: int, db: Session = Depends(get_db), user
 
 
 @router.get("/rooms/{room_id}/operational-state")
-def room_operational_state(room_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    room = db.get(Room, room_id)
+def room_operational_state(room_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    room = db.scalar(select(Room).where(Room.id == room_id, Room.property_id == property_.id))
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
     task = active_housekeeping_task(db, room.id)
