@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
@@ -52,6 +52,7 @@ class PhaseAWorkflowTests(unittest.TestCase):
         self.room2 = Room(property_id=self.property.id, number="102", room_type_id=1, status="available")
         self.room3 = Room(property_id=self.property.id, number="103", room_type_id=1, status="available")
         self.db.add_all([self.user, self.booking_guest, self.occupant_a, self.occupant_b, self.occupant_c, rt]); self.db.flush()
+        ensure_test_property_access(self.db, self.user.id, self.property.id)
         for room in (self.room1, self.room2, self.room3): room.room_type_id = rt.id
         self.db.add_all([self.room1, self.room2, self.room3]); self.db.commit()
 

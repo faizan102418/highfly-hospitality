@@ -12,6 +12,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .auth import require_roles
 from .db import Base, get_db
+from .tenancy import resolve_authorized_property
 from .ledger import post_transaction
 from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, Room, StayOccupant, User
 from .pms_core import Stay
@@ -98,10 +99,14 @@ def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: i
     db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
-def stay_or_404(db: Session, stay_id: int) -> Stay:
+def stay_or_404(db: Session, stay_id: int, user_id: int) -> Stay:
     stay = db.get(Stay, stay_id)
     if not stay:
         raise HTTPException(status_code=404, detail="Stay not found")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
     return stay
 
 
@@ -129,7 +134,7 @@ def validate_window(db: Session, stay: Stay, window_id: int) -> StayFolioWindow:
 
 @router.post("/stays/{stay_id}/check-in", status_code=201)
 def check_in_stay(stay_id: int, payload: StayCheckInPayload | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     if stay.status != "reserved":
         raise HTTPException(status_code=409, detail="Only a reserved room stay can be checked in")
     room = db.get(Room, stay.room_id)
@@ -151,7 +156,7 @@ def check_in_stay(stay_id: int, payload: StayCheckInPayload | None = None, db: S
 
 @router.patch("/stays/{stay_id}/occupants/{occupant_id}/guest")
 def change_stay_occupant_guest(stay_id: int, occupant_id: int, payload: OccupantGuestChange, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     from .models import StayOccupant
 
     occupant = db.scalar(select(StayOccupant).where(StayOccupant.id == occupant_id, StayOccupant.stay_id == stay.id))
@@ -174,7 +179,7 @@ def change_stay_occupant_guest(stay_id: int, occupant_id: int, payload: Occupant
 
 @router.post("/stays/{stay_id}/occupants/share", status_code=201)
 def share_stay_with_occupant(stay_id: int, payload: OccupantGuestChange, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     from .models import StayOccupant
 
     guest = db.get(Guest, payload.guest_id)
@@ -192,8 +197,8 @@ def share_stay_with_occupant(stay_id: int, payload: OccupantGuestChange, db: Ses
 
 @router.post("/stays/{stay_id}/deposits/transfer", status_code=201)
 def transfer_deposit(stay_id: int, payload: DepositTransferCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    source = stay_or_404(db, stay_id)
-    target = stay_or_404(db, payload.target_stay_id)
+    source = stay_or_404(db, stay_id, user.id)
+    target = stay_or_404(db, payload.target_stay_id, user.id)
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Source and target stay must be different")
     available = deposit_balance(db, source.id)
@@ -211,7 +216,7 @@ def transfer_deposit(stay_id: int, payload: DepositTransferCreate, db: Session =
 
 @router.post("/stays/{stay_id}/deposits/refund", status_code=201)
 def refund_deposit(stay_id: int, payload: DepositRefundCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     amount = money(payload.amount)
     available = deposit_balance(db, stay.id)
     if amount > available:
@@ -232,7 +237,7 @@ def refund_deposit(stay_id: int, payload: DepositRefundCreate, db: Session = Dep
 
 @router.post("/stays/{stay_id}/deposits/apply", status_code=201)
 def apply_deposit(stay_id: int, payload: DepositApplyCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     folio = db.get(Folio, payload.folio_id)
     if not folio:
         raise HTTPException(status_code=404, detail="Folio not found")
@@ -263,7 +268,7 @@ def apply_deposit(stay_id: int, payload: DepositApplyCreate, db: Session = Depen
 
 @router.patch("/stays/{stay_id}/folio-windows/{window_id}")
 def update_folio_window(stay_id: int, window_id: int, payload: FolioWindowUpdatePayload, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, user.id)
     window = db.get(StayFolioWindow, window_id)
     if not window or window.stay_id != stay.id:
         raise HTTPException(status_code=404, detail="Folio window not found for this stay")
@@ -318,6 +323,6 @@ def route_folio_item(item_id: int, payload: FolioItemRouteCreate, db: Session = 
 
 @router.get("/stays/{stay_id}/folio-routing")
 def list_folio_routing(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stay = stay_or_404(db, stay_id)
+    stay = stay_or_404(db, stay_id, _.id)
     rows = db.execute(select(FolioItemRouting, FolioItem, StayFolioWindow).join(FolioItem, FolioItem.id == FolioItemRouting.folio_item_id).join(StayFolioWindow, StayFolioWindow.id == FolioItemRouting.window_id).where(StayFolioWindow.stay_id == stay.id).order_by(FolioItemRouting.id)).all()
     return [{"routing_id": route.id, "folio_item_id": item.id, "description": item.description, "category": item.category, "amount": money(Decimal(item.quantity) * Decimal(item.unit_price) - Decimal(item.discount)), "window_id": window.id, "window_name": window.name, "notes": route.notes} for route, item, window in rows]
