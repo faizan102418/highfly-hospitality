@@ -10,8 +10,9 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .auth import require_roles
 from .db import Base, get_db
-from .models import AuditLog, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Room, StayOccupant, User
+from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Room, StayOccupant, User
 from .pms_core import Stay
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api", tags=["stay-lifecycle"])
 ACTIVE_STATUSES = ("reserved", "checked_in")
@@ -72,6 +73,15 @@ def get_stay(db: Session, stay_id: int) -> Stay:
     return stay
 
 
+def authorized_stay(db: Session, stay_id: int, user_id: int) -> tuple[Stay, Reservation]:
+    stay = get_stay(db, stay_id)
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
+    return stay, reservation
+
+
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
     if entity_type == "folio_item":
         property_id = db.scalar(select(Reservation.property_id).join(Folio, Folio.reservation_id == Reservation.id).join(FolioItem, FolioItem.folio_id == Folio.id).where(FolioItem.id == entity_id))
@@ -116,8 +126,8 @@ def stay_folio_id(db: Session, stay_id: int) -> int:
 
 
 @router.get("/stays/{stay_id}/lifecycle")
-def get_stay_lifecycle(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stay = get_stay(db, stay_id)
+def get_stay_lifecycle(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    stay, _reservation = authorized_stay(db, stay_id, user.id)
     occupants = db.execute(
         select(StayOccupant, Guest.full_name)
         .join(Guest, Guest.id == StayOccupant.guest_id)
@@ -134,8 +144,7 @@ def get_stay_lifecycle(stay_id: int, db: Session = Depends(get_db), _: User = De
 
 @router.patch("/stays/{stay_id}/dates")
 def update_stay_dates(stay_id: int, payload: StayDatesUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
-    reservation = db.get(Reservation, stay.reservation_id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     if stay.status not in ACTIVE_STATUSES:
         raise HTTPException(status_code=409, detail="Only active stays can have dates changed")
     if not reservation:
@@ -162,7 +171,7 @@ def update_stay_dates(stay_id: int, payload: StayDatesUpdate, db: Session = Depe
 
 @router.patch("/stays/{stay_id}/occupants/{occupant_id}")
 def update_stay_occupant(stay_id: int, occupant_id: int, payload: OccupantUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
+    stay, _reservation = authorized_stay(db, stay_id, user.id)
     occupant = db.scalar(select(StayOccupant).where(StayOccupant.id == occupant_id, StayOccupant.stay_id == stay_id))
     if not occupant:
         raise HTTPException(status_code=404, detail="Stay occupant not found")
@@ -187,7 +196,7 @@ def update_stay_occupant(stay_id: int, occupant_id: int, payload: OccupantUpdate
 
 @router.delete("/stays/{stay_id}/occupants/{occupant_id}")
 def remove_stay_occupant(stay_id: int, occupant_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
+    stay, _reservation = authorized_stay(db, stay_id, user.id)
     occupant = db.scalar(select(StayOccupant).where(StayOccupant.id == occupant_id, StayOccupant.stay_id == stay_id))
     if not occupant:
         raise HTTPException(status_code=404, detail="Stay occupant not found")
@@ -208,13 +217,15 @@ def remove_stay_occupant(stay_id: int, occupant_id: int, db: Session = Depends(g
 
 @router.post("/stays/{stay_id}/replace-room", status_code=201)
 def replace_stay_room(stay_id: int, payload: RoomReplacement, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     if stay.status != "reserved":
         raise HTTPException(status_code=409, detail="Reserved stays can be replaced; checked-in stays must use room move")
     source = db.get(Room, stay.room_id)
     target = db.get(Room, payload.to_room_id)
     if not source or not target:
         raise HTTPException(status_code=404, detail="Source or destination room not found")
+    if source.property_id != reservation.property_id or target.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Source and destination rooms must belong to the stay property")
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Destination room must be different")
     if target.status in ("dirty", "out_of_order", "occupied"):
@@ -238,7 +249,7 @@ def replace_stay_room(stay_id: int, payload: RoomReplacement, db: Session = Depe
 
 @router.post("/stays/{stay_id}/cancel")
 def cancel_stay_room(stay_id: int, payload: RoomReplacement | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     if stay.status != "reserved":
         raise HTTPException(status_code=409, detail="Only reserved room stays can be cancelled")
     folio_id = db.scalar(select(Folio.id).where(Folio.reservation_id == stay.reservation_id).order_by(Folio.id).limit(1))
@@ -248,11 +259,13 @@ def cancel_stay_room(stay_id: int, payload: RoomReplacement | None = None, db: S
         if db.scalar(select(Payment.id).where(Payment.folio_id == folio_id).limit(1)):
             raise HTTPException(status_code=409, detail="Room stay cannot be cancelled after payments have been posted")
     room_id = stay.room_id
+    room = db.get(Room, room_id)
+    if room is not None and room.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Stay room belongs to a different property")
     stay.status = "cancelled"
     link = db.scalar(select(ReservationRoom).where(ReservationRoom.reservation_id == stay.reservation_id, ReservationRoom.room_id == room_id))
     if link:
         db.delete(link)
-    room = db.get(Room, room_id)
     if room and room.status == "reserved":
         room.status = "available"
     audit(db, user.id, "stay_cancel", "stay", stay.id, {"room_id": room_id, "reason": getattr(payload, "reason", None)})
@@ -261,15 +274,19 @@ def cancel_stay_room(stay_id: int, payload: RoomReplacement | None = None, db: S
 
 
 @router.get("/stays/{stay_id}/folio-windows")
-def list_stay_folio_windows(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stay = get_stay(db, stay_id)
+def list_stay_folio_windows(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    stay, _reservation = authorized_stay(db, stay_id, user.id)
     windows = db.scalars(select(StayFolioWindow).where(StayFolioWindow.stay_id == stay.id).order_by(StayFolioWindow.id)).all()
     return [{"id": w.id, "folio_id": w.folio_id, "stay_id": w.stay_id, "name": w.name, "payer_type": w.payer_type, "guest_id": w.guest_id, "group_id": w.group_id, "status": w.status} for w in windows]
 
 
 @router.post("/stays/{stay_id}/folio-windows", status_code=201)
 def create_stay_folio_window(stay_id: int, payload: FolioWindowCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
+    if payload.guest_id is not None:
+        guest = db.get(Guest, payload.guest_id)
+        if guest is None or guest.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
     window = StayFolioWindow(folio_id=stay_folio_id(db, stay.id), stay_id=stay.id, name=payload.name, payer_type=payload.payer_type, guest_id=payload.guest_id, group_id=payload.group_id)
     db.add(window); db.flush()
     audit(db, user.id, "folio_window_create", "stay_folio_window", window.id, {"stay_id": stay.id, "name": window.name})
@@ -279,10 +296,14 @@ def create_stay_folio_window(stay_id: int, payload: FolioWindowCreate, db: Sessi
 
 @router.patch("/stays/{stay_id}/folio-windows/{window_id}")
 def update_stay_folio_window(stay_id: int, window_id: int, payload: FolioWindowUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = get_stay(db, stay_id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     window = db.get(StayFolioWindow, window_id)
     if not window or window.stay_id != stay.id:
         raise HTTPException(status_code=404, detail="Folio window not found")
+    if payload.guest_id is not None:
+        guest = db.get(Guest, payload.guest_id)
+        if guest is None or guest.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
     for field in ("name", "payer_type", "guest_id", "group_id", "status"):
         value = getattr(payload, field)
         if value is not None:
