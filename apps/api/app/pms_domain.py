@@ -39,6 +39,17 @@ def money(value: Decimal | int | float) -> Decimal:
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
+def authorized_stay_or_404(db: Session, stay_id: int, user_id: int) -> tuple[Stay, Reservation]:
+    stay = db.get(Stay, stay_id)
+    if stay is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
+    return stay, reservation
+
+
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict | None = None) -> None:
     import json
     details = details or {}
@@ -194,9 +205,10 @@ def get_business_date(db: Session = Depends(get_db), user: User = Depends(requir
 
 @router.post("/stays/{stay_id}/occupants", status_code=201)
 def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = db.get(Stay, stay_id)
-    if not stay: raise HTTPException(status_code=404, detail="Stay not found")
-    if not db.get(Guest, payload.guest_id): raise HTTPException(status_code=400, detail="Guest does not exist")
+    stay, reservation = authorized_stay_or_404(db, stay_id, user.id)
+    guest = db.get(Guest, payload.guest_id)
+    if not guest: raise HTTPException(status_code=400, detail="Guest does not exist")
+    if guest.property_id != reservation.property_id: raise HTTPException(status_code=409, detail="Occupant guest belongs to a different property")
     check_in = payload.check_in or stay.check_in; check_out = payload.check_out or stay.check_out
     if check_out <= check_in or check_in < stay.check_in or check_out > stay.check_out: raise HTTPException(status_code=400, detail="Occupant dates must be within the stay")
     if payload.is_primary:
@@ -207,24 +219,22 @@ def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depen
 
 
 @router.get("/stays/{stay_id}/occupants")
-def list_stay_occupants(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    if not db.get(Stay, stay_id): raise HTTPException(status_code=404, detail="Stay not found")
+def list_stay_occupants(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    authorized_stay_or_404(db, stay_id, user.id)
     rows = db.execute(select(StayOccupant, Guest.full_name).join(Guest, Guest.id == StayOccupant.guest_id).where(StayOccupant.stay_id == stay_id).order_by(StayOccupant.is_primary.desc(), StayOccupant.id)).all()
     return [{"id": o.id, "stay_id": o.stay_id, "guest_id": o.guest_id, "guest_name": name, "role": o.role, "is_primary": o.is_primary, "check_in": o.check_in, "check_out": o.check_out, "notes": o.notes} for o, name in rows]
 
 
 @router.get("/stays/{stay_id}/rate-segments")
-def list_rate_segments(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stay = db.get(Stay, stay_id)
-    if not stay: raise HTTPException(status_code=404, detail="Stay not found")
+def list_rate_segments(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    stay, _reservation = authorized_stay_or_404(db, stay_id, user.id)
     segments = ensure_default_rate_segment(db, stay); db.commit()
     return [{"id": s.id, "stay_id": s.stay_id, "from_date": s.from_date, "to_date": s.to_date, "rate": s.rate, "discount_percent": s.discount_percent, "discount_amount": s.discount_amount, "rate_plan": s.rate_plan, "source": s.source, "notes": s.notes} for s in segments]
 
 
 @router.post("/stays/{stay_id}/rate-segments", status_code=201)
 def create_rate_segment(stay_id: int, payload: RateSegmentCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = db.get(Stay, stay_id)
-    if not stay: raise HTTPException(status_code=404, detail="Stay not found")
+    stay, _reservation = authorized_stay_or_404(db, stay_id, user.id)
     if payload.to_date <= payload.from_date or payload.from_date < stay.check_in or payload.to_date > stay.check_out: raise HTTPException(status_code=400, detail="Rate segment dates must be within the stay")
     if payload.discount_percent and payload.discount_amount: raise HTTPException(status_code=400, detail="Use either percentage or fixed discount")
     segment = replace_rate_segment(db, stay, payload, user.id)
@@ -233,8 +243,8 @@ def create_rate_segment(stay_id: int, payload: RateSegmentCreate, db: Session = 
 
 
 @router.get("/stays/{stay_id}/deposits")
-def list_deposits(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    if not db.get(Stay, stay_id): raise HTTPException(status_code=404, detail="Stay not found")
+def list_deposits(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    authorized_stay_or_404(db, stay_id, user.id)
     rows = db.scalars(select(DepositTransaction).where(DepositTransaction.stay_id == stay_id).order_by(DepositTransaction.created_at, DepositTransaction.id)).all()
     balance = Decimal("0.00"); result = []
     for item in rows:
@@ -245,8 +255,7 @@ def list_deposits(stay_id: int, db: Session = Depends(get_db), _: User = Depends
 
 @router.post("/stays/{stay_id}/deposits", status_code=201)
 def create_deposit(stay_id: int, payload: DepositCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = db.get(Stay, stay_id)
-    if not stay: raise HTTPException(status_code=404, detail="Stay not found")
+    stay, _reservation = authorized_stay_or_404(db, stay_id, user.id)
     current = Decimal("0.00")
     for item in db.scalars(select(DepositTransaction).where(DepositTransaction.stay_id == stay_id)).all(): current += item.amount if item.transaction_type in {"received", "adjusted"} else -item.amount
     signed = payload.amount if payload.transaction_type in {"received", "adjusted"} else -payload.amount
@@ -260,11 +269,12 @@ def create_deposit(stay_id: int, payload: DepositCreate, db: Session = Depends(g
 
 @router.post("/stays/{stay_id}/move", status_code=201)
 def move_stay_room(stay_id: int, payload: RoomMoveCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = db.get(Stay, stay_id)
-    if not stay: raise HTTPException(status_code=404, detail="Stay not found")
+    stay, reservation = authorized_stay_or_404(db, stay_id, user.id)
     if stay.status != "checked_in": raise HTTPException(status_code=409, detail="Room move requires a checked-in stay")
     target = db.get(Room, payload.to_room_id); source = db.get(Room, stay.room_id)
     if not target or not source: raise HTTPException(status_code=404, detail="Source or destination room not found")
+    if target.property_id != reservation.property_id or source.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Source and destination rooms must belong to the stay property")
     if target.id == source.id: raise HTTPException(status_code=400, detail="Destination room must be different")
     if target.status != "available": raise HTTPException(status_code=409, detail="Destination room is not available")
     move = RoomMove(stay_id=stay.id, from_room_id=source.id, to_room_id=target.id, reason=payload.reason, created_by=user.id); db.add(move); db.flush()
@@ -276,8 +286,8 @@ def move_stay_room(stay_id: int, payload: RoomMoveCreate, db: Session = Depends(
 
 
 @router.get("/stays/{stay_id}/moves")
-def list_room_moves(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    if not db.get(Stay, stay_id): raise HTTPException(status_code=404, detail="Stay not found")
+def list_room_moves(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    authorized_stay_or_404(db, stay_id, user.id)
     rows = db.scalars(select(RoomMove).where(RoomMove.stay_id == stay_id).order_by(RoomMove.effective_at, RoomMove.id)).all()
     return [{"id": m.id, "stay_id": m.stay_id, "from_room_id": m.from_room_id, "to_room_id": m.to_room_id, "effective_at": m.effective_at, "reason": m.reason, "created_by": m.created_by} for m in rows]
 
@@ -286,12 +296,17 @@ def list_room_moves(stay_id: int, db: Session = Depends(get_db), _: User = Depen
 def split_reservation(reservation_id: int, payload: ReservationSplitCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     source = db.get(Reservation, reservation_id)
     if not source: raise HTTPException(status_code=404, detail="Reservation not found")
+    resolve_authorized_property(db, user.id, source.property_id)
     if source.status != "reserved": raise HTTPException(status_code=409, detail="Reservation split is only allowed before check-in")
     current_rooms = db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation_id)).all()
     if not set(payload.room_ids).issubset(set(current_rooms)): raise HTTPException(status_code=400, detail="Split contains a room not assigned to the reservation")
     if set(payload.room_ids) == set(current_rooms): raise HTTPException(status_code=400, detail="At least one room must remain on the source reservation")
     guest_id = payload.new_guest_id or source.guest_id
-    if not db.get(Guest, guest_id): raise HTTPException(status_code=400, detail="New guest does not exist")
+    guest = db.get(Guest, guest_id)
+    if not guest: raise HTTPException(status_code=400, detail="New guest does not exist")
+    if guest.property_id != source.property_id: raise HTTPException(status_code=409, detail="New guest belongs to a different property")
+    room_property_ids = set(db.scalars(select(Room.property_id).where(Room.id.in_(payload.room_ids))).all())
+    if room_property_ids != {source.property_id}: raise HTTPException(status_code=409, detail="Selected rooms must belong to the reservation property")
     source_folio = db.scalar(select(Folio).where(Folio.reservation_id == source.id))
     if source_folio and db.scalar(select(Payment.id).where(Payment.folio_id == source_folio.id)): raise HTTPException(status_code=409, detail="Cannot split a reservation after payments have been posted")
     new_reservation = Reservation(guest_id=guest_id, check_in=source.check_in, check_out=source.check_out, status="reserved", notes=source.notes)
