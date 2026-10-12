@@ -159,7 +159,6 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.flush()
         other_folio = Folio(reservation_id=other_reservation.id, status="open")
         self.db.add(other_folio)
-        self.db.db_flush if False else None
         self.db.flush()
         other_stay = Stay(reservation_id=other_reservation.id, room_id=other_room.id, guest_id=other_guest.id, status="reserved", check_in=other_reservation.check_in, check_out=other_reservation.check_out, agreed_rate=Decimal("100.00"))
         self.db.add(other_stay)
