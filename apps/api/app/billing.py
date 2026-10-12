@@ -16,7 +16,7 @@ from .front_desk import post_accrued_room_charges, router as front_desk_router
 from .housekeeping import router as housekeeping_router
 from .financial_authority import folio_ledger_summary, has_posted_folio_item_transaction, post_folio_charge_authoritative
 from .folio_integrity import item_has_active_charge
-from .ledger import post_folio_payment, router as ledger_router
+from .ledger import post_folio_payment, router as ledger_router, scoped_idempotency_key
 from .models import AuditLog, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Room, StayRateSegment, User
 from .night_audit import router as night_audit_router
 from .pms_core import Stay
@@ -222,9 +222,13 @@ def add_folio_deposit(folio_id: int, payload: FolioDepositCreate, db: Session = 
 def add_payment(folio_id: int, payload: PaymentCreate, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     folio = db.get(Folio, folio_id)
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
+    reservation = db.get(Reservation, folio.reservation_id)
+    if reservation is None: raise HTTPException(status_code=404, detail="Folio not found")
+    property_ = resolve_authorized_property(db, user.id, reservation.property_id)
     if folio.status != "open": raise HTTPException(status_code=409, detail="Folio is already closed")
     if idempotency_key:
-        existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == idempotency_key))
+        persisted_key = scoped_idempotency_key(property_.id, idempotency_key.strip())
+        existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == persisted_key))
         if existing:
             if existing.transaction_type != "folio_payment" or existing.folio_id != folio_id: raise HTTPException(status_code=409, detail="Idempotency key is already bound to a different financial transaction")
             payment = db.get(Payment, int(existing.reference_id)) if existing.reference_id else None
@@ -232,10 +236,9 @@ def add_payment(folio_id: int, payload: PaymentCreate, idempotency_key: str | No
             return payment
     summary = build_folio_response(db, folio)
     if payload.amount > summary.balance: raise HTTPException(status_code=400, detail=f"Payment exceeds outstanding balance of {summary.balance}")
-    reservation = db.get(Reservation, folio.reservation_id)
     payment = Payment(folio_id=folio_id, amount=payload.amount, method=payload.method, reference=payload.reference); db.add(payment); db.flush()
     tx = post_folio_payment(db, folio_id=folio_id, reservation_id=reservation.id if reservation else 0, payment_id=payment.id, amount=payload.amount, method=payload.method, created_by=user.id, idempotency_key=idempotency_key)
-    if idempotency_key and tx.idempotency_key != idempotency_key: raise HTTPException(status_code=409, detail="Financial idempotency key was not applied")
+    if idempotency_key and tx.idempotency_key != scoped_idempotency_key(property_.id, idempotency_key.strip()): raise HTTPException(status_code=409, detail="Financial idempotency key was not applied")
     audit(db, user.id, "add", "payment", payment.id, {"folio_id": folio_id, "amount": str(payload.amount), "method": payload.method}); db.commit(); db.refresh(payment)
     return payment
 
