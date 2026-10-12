@@ -29,6 +29,7 @@ from app.phase_a_completion import (
 )
 from app.pms_core import Stay
 from app.stay_lifecycle import StayFolioWindow
+from app.tenancy import Organization, Property
 
 
 class PhaseACompletionTests(unittest.TestCase):
@@ -158,6 +159,7 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.flush()
         other_folio = Folio(reservation_id=other_reservation.id, status="open")
         self.db.add(other_folio)
+        self.db.db_flush if False else None
         self.db.flush()
         other_stay = Stay(reservation_id=other_reservation.id, room_id=other_room.id, guest_id=other_guest.id, status="reserved", check_in=other_reservation.check_in, check_out=other_reservation.check_out, agreed_rate=Decimal("100.00"))
         self.db.add(other_stay)
@@ -176,8 +178,13 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(self.db.query(AuditLog).count(), before_audits)
 
     def test_folio_window_rejects_guest_from_another_property_without_side_effects(self):
-        other_property = ensure_test_property(self.db)
-        foreign_guest = Guest(property_id=other_property.id, full_name="Foreign Payer")
+        other_organization = Organization(name=f"Foreign Org {id(self)}", slug=f"foreign-org-{id(self)}")
+        self.db.add(other_organization)
+        self.db.flush()
+        foreign_property = Property(organization_id=other_organization.id, name="Foreign Property", code=f"FOREIGN-{id(self)}", slug=f"foreign-property-{id(self)}", timezone="UTC", currency="PKR")
+        self.db.add(foreign_property)
+        self.db.flush()
+        foreign_guest = Guest(property_id=foreign_property.id, full_name="Foreign Payer")
         self.db.add(foreign_guest)
         self.db.commit()
         before_name = self.window.name
