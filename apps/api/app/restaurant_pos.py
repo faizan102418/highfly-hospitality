@@ -508,6 +508,12 @@ def add_pos_payment(
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Order folio is unavailable")
     existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(property_.id, key)))
+    if existing is None:
+        # Legacy keys are accepted only when the original transaction belongs to this property.
+        existing = db.scalar(select(FinancialTransaction).where(
+            FinancialTransaction.idempotency_key == key,
+            FinancialTransaction.property_id == property_.id,
+        ))
     if existing is not None:
         if existing.transaction_type != "folio_payment" or existing.folio_id != folio.id or not (existing.description or "").startswith("POS payment #"):
             raise HTTPException(status_code=409, detail="Idempotency key is already bound to another financial operation")
