@@ -28,6 +28,7 @@ from app.phase_a_workflows import (
     transfer_deposit,
 )
 from app.pms_core import Stay
+from app.tenancy import Organization, Property
 
 
 class PhaseAWorkflowTests(unittest.TestCase):
@@ -58,6 +59,22 @@ class PhaseAWorkflowTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.rollback(); self.db.close()
+
+    def make_other_property(self):
+        organization = Organization(name="Other Organization", slug="other-org")
+        self.db.add(organization)
+        self.db.flush()
+        property_ = Property(
+            organization_id=organization.id,
+            name="Other Property",
+            code="OTHER",
+            slug="other-property",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(property_)
+        self.db.flush()
+        return property_
 
     def make_reservation(self, status="reserved", check_in=date(2026, 9, 8), check_out=date(2026, 9, 13), rooms=None):
         rooms = rooms or [self.room1]
@@ -169,6 +186,54 @@ class PhaseAWorkflowTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             split_reservation(reservation.id, ReservationSplitRequest(to_date=date(2026, 9, 10), room_stay_ids=[stay.id]), self.db, self.user)
         self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_add_occupant_rejects_guest_from_other_property(self):
+        other_property = self.make_other_property()
+        other_guest = Guest(property_id=other_property.id, full_name="Foreign Guest")
+        self.db.add(other_guest)
+        self.db.flush()
+        reservation = self.make_reservation()
+        stay = self.make_stay(reservation, self.room1)
+        with self.assertRaises(HTTPException) as ctx:
+            add_stay_occupant(stay.id, OccupantCreate(guest_id=other_guest.id), self.db, self.user)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self.db.query(StayOccupant).count(), 0)
+
+    def test_room_move_rejects_destination_room_from_other_property(self):
+        other_property = self.make_other_property()
+        other_type = RoomType(property_id=other_property.id, name="Other Standard", base_rate=12000)
+        self.db.add(other_type)
+        self.db.flush()
+        other_room = Room(property_id=other_property.id, number="OTHER-101", room_type_id=other_type.id, status="available")
+        self.db.add(other_room)
+        reservation = self.make_reservation(status="checked_in")
+        stay = self.make_stay(reservation, self.room1, status="checked_in")
+        self.room1.status = "occupied"
+        self.db.flush()
+        with self.assertRaises(HTTPException) as ctx:
+            move_checked_in_stay(stay.id, MoveRoomRequest(to_room_id=other_room.id), self.db, self.user)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self.db.get(Stay, stay.id).room_id, self.room1.id)
+        self.assertEqual(self.db.query(RoomMove).count(), 0)
+
+    def test_reservation_split_rejects_unassigned_property(self):
+        other_property = self.make_other_property()
+        other_guest = Guest(property_id=other_property.id, full_name="Other Booking Guest")
+        other_type = RoomType(property_id=other_property.id, name="Other Split Type", base_rate=12000)
+        self.db.add_all([other_guest, other_type])
+        self.db.flush()
+        other_room = Room(property_id=other_property.id, number="OTHER-201", room_type_id=other_type.id, status="reserved")
+        reservation = Reservation(property_id=other_property.id, guest_id=other_guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 13), status="reserved")
+        self.db.add_all([other_room, reservation])
+        self.db.flush()
+        stay = Stay(reservation_id=reservation.id, room_id=other_room.id, guest_id=other_guest.id, status="reserved", check_in=reservation.check_in, check_out=reservation.check_out, agreed_rate=Decimal("12000.00"))
+        self.db.add(stay)
+        self.db.flush()
+        reservations_before = self.db.query(Reservation).count()
+        with self.assertRaises(HTTPException) as ctx:
+            split_reservation(reservation.id, ReservationSplitRequest(to_date=date(2026, 9, 10), room_stay_ids=[stay.id]), self.db, self.user)
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(self.db.query(Reservation).count(), reservations_before)
 
     def test_phase_a_routes_are_mounted(self):
         paths = app.openapi().get("paths", {})

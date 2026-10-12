@@ -134,6 +134,9 @@ def add_occupant_internal(
     guest = db.get(Guest, payload.guest_id)
     if not guest:
         raise HTTPException(status_code=400, detail="Guest does not exist")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None or guest.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Occupant guest belongs to a different property")
     check_in = payload.check_in or stay.check_in
     check_out = payload.check_out or stay.check_out
     if check_in < stay.check_in or check_out > stay.check_out or check_out <= check_in:
@@ -231,6 +234,10 @@ def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(
 def transfer_deposit(stay_id: int, payload: DepositTransfer, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     source = stay_or_404(db, stay_id, user.id)
     target = stay_or_404(db, payload.target_stay_id, user.id)
+    source_reservation = db.get(Reservation, source.reservation_id)
+    target_reservation = db.get(Reservation, target.reservation_id)
+    if source_reservation is None or target_reservation is None or source_reservation.property_id != target_reservation.property_id:
+        raise HTTPException(status_code=409, detail="Deposit transfer stays must belong to the same property")
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Deposit transfer requires a different target stay")
     if source.reservation_id == target.reservation_id:
@@ -273,6 +280,9 @@ def move_checked_in_stay(stay_id: int, payload: MoveRoomRequest, db: Session = D
     target = db.get(Room, payload.to_room_id)
     if not source or not target:
         raise HTTPException(status_code=404, detail="Source or destination room not found")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None or source.property_id != reservation.property_id or target.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Source and destination rooms must belong to the stay's property")
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Destination room must be different")
     if not room_available(db, target.id, stay):
@@ -297,6 +307,10 @@ def split_reservation(reservation_id: int, payload: ReservationSplitRequest, db:
     source = db.get(Reservation, reservation_id)
     if not source:
         raise HTTPException(status_code=404, detail="Reservation not found")
+    resolve_authorized_property(db, user.id, source.property_id)
+    source_guest = db.get(Guest, source.guest_id)
+    if source_guest is None or source_guest.property_id != source.property_id:
+        raise HTTPException(status_code=409, detail="Reservation guest does not belong to the reservation property")
     if source.status != "reserved":
         raise HTTPException(status_code=409, detail="Only reserved reservations can be split")
     if payload.to_date <= source.check_in or payload.to_date >= source.check_out:
@@ -310,6 +324,8 @@ def split_reservation(reservation_id: int, payload: ReservationSplitRequest, db:
     selected = [stay for stay in stays if stay is not None]
     if any(stay.reservation_id != source.id for stay in selected):
         raise HTTPException(status_code=400, detail="All selected stays must belong to the source reservation")
+    if any((room := db.get(Room, stay.room_id)) is None or room.property_id != source.property_id for stay in selected):
+        raise HTTPException(status_code=409, detail="All selected stay rooms must belong to the reservation property")
     if any(stay.status != "reserved" for stay in selected):
         raise HTTPException(status_code=409, detail="Only reserved room stays can be split")
     if any(not (stay.check_in < payload.to_date < stay.check_out) for stay in selected):
