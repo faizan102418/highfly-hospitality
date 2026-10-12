@@ -15,7 +15,7 @@ import app.pms_core  # noqa: F401
 from app.financial_authority import post_folio_charge_authoritative
 from app.financial_models import PaymentRefund
 from app.financial_ops import RefundCreate, create_deposit_with_ledger, refund_payment
-from app.ledger import post_folio_payment
+from app.ledger import post_folio_payment, scoped_idempotency_key
 from app.models import (
     BusinessDateState,
     DepositTransaction,
