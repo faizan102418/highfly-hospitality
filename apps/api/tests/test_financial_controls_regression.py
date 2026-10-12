@@ -12,7 +12,7 @@ import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.finance_controls import post_deposit, require_open_business_date, transfer_folio_item
-from app.financial_ops import folio_balance, refund_payment
+from app.financial_ops import AdjustmentCreate, WindowCreate, create_adjustment, create_folio_window, folio_balance, refund_payment
 from app.financial_models import Invoice, InvoiceSequence
 from app.ledger import post_transaction, reverse_transaction
 from app.models import (
@@ -31,7 +31,7 @@ from app.models import (
     User,
 )
 from app.pms_core import Stay
-from app.tenancy import PropertyUserAccess
+from app.tenancy import Organization, Property, PropertyUserAccess
 
 
 class FinancialControlsRegressionTests(unittest.TestCase):
@@ -156,6 +156,26 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         self.db.rollback()
         self.db.close()
 
+    def _foreign_folio(self):
+        org = Organization(name="Other Organization", slug="other-org")
+        self.db.add(org)
+        self.db.flush()
+        property_ = Property(organization_id=org.id, name="Other Property", code="OTHER", slug="other-property", timezone="UTC", currency="PKR")
+        self.db.add(property_)
+        self.db.flush()
+        guest = Guest(property_id=property_.id, full_name="Other Tenant Guest")
+        self.db.add(guest)
+        self.db.flush()
+        reservation = Reservation(property_id=property_.id, guest_id=guest.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 10), status="checked_in")
+        self.db.add(reservation)
+        self.db.flush()
+        folio = Folio(reservation_id=reservation.id, status="open")
+        self.db.add(folio)
+        self.db.flush()
+        self.db.add(FolioItem(folio_id=folio.id, description="Foreign room charge", category="room", quantity=1, unit_price=100, discount=0))
+        self.db.commit()
+        return property_, reservation, folio
+
     def _new_stay(self, deposit_required=200):
         stay = Stay(
             reservation_id=self.res_a.id,
@@ -170,6 +190,41 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         self.db.commit()
         self.db.refresh(stay)
         return stay
+
+    def test_financial_operations_reject_foreign_property_folios(self):
+        _, foreign_reservation, foreign_folio = self._foreign_folio()
+
+        with self.assertRaises(HTTPException) as refund_error:
+            refund_payment(
+                foreign_folio.id,
+                type("RefundPayload", (), {"payment_id": self.payment.id, "amount": Decimal("10.00"), "method": "cash", "reference": None, "reason": "Foreign folio"})(),
+                "foreign-folio-refund",
+                self.db,
+                self.user,
+            )
+        self.assertEqual(refund_error.exception.status_code, 404)
+
+        with self.assertRaises(HTTPException) as window_error:
+            create_folio_window(foreign_folio.id, WindowCreate(name="Unauthorized window"), self.db, self.user)
+        self.assertEqual(window_error.exception.status_code, 404)
+
+        with self.assertRaises(HTTPException) as adjustment_error:
+            create_adjustment(
+                AdjustmentCreate(
+                    description="Unauthorized adjustment",
+                    folio_id=foreign_folio.id,
+                    reservation_id=foreign_reservation.id,
+                    lines=[
+                        {"account": "Cash", "direction": "debit", "amount": Decimal("10.00")},
+                        {"account": "Revenue - Test", "direction": "credit", "amount": Decimal("10.00")},
+                    ],
+                ),
+                self.db,
+                self.user,
+            )
+        self.assertEqual(adjustment_error.exception.status_code, 400)
+        self.db.rollback()
+        self.assertIsNone(self.db.scalar(select(FinancialTransaction).where(FinancialTransaction.description == "Unauthorized adjustment")))
 
     def test_full_and_partial_refund_limits_are_enforced(self):
         first_payload = type(

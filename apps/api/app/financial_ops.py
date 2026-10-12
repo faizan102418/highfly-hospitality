@@ -123,7 +123,8 @@ def atomic_checkout(reservation_id: int, db: Session = Depends(get_db), user: Us
 
 @router.post("/folios/{folio_id}/refunds", status_code=201)
 def refund_payment(folio_id: int, payload: RefundCreate, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = db.get(Folio, folio_id); payment = db.get(Payment, payload.payment_id); key = (idempotency_key or "").strip()
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id)); payment = db.get(Payment, payload.payment_id); key = (idempotency_key or "").strip()
     if not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for refunds")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if not folio or not payment or payment.folio_id != folio_id: raise HTTPException(status_code=404, detail="Folio or payment not found")
@@ -154,31 +155,36 @@ def refund_payment(folio_id: int, payload: RefundCreate, idempotency_key: str | 
 
 @router.post("/ledger/adjustments", status_code=201)
 def create_adjustment(payload: AdjustmentCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
+    property_ = resolve_authorized_property(db, user.id)
     try:
-        tx = post_transaction(db, transaction_type="adjustment", description=payload.description, reference_type="manual_adjustment", reference_id=payload.description[:50], folio_id=payload.folio_id, reservation_id=payload.reservation_id, created_by=user.id, lines=payload.lines); audit(db, user.id, "adjustment", "financial_transaction", tx.id, {"description": payload.description, "folio_id": payload.folio_id, "reservation_id": payload.reservation_id}); db.commit(); db.refresh(tx); return {"id": tx.id, "transaction_no": tx.transaction_no, "business_date": tx.business_date, "status": tx.status}
+        tx = post_transaction(db, transaction_type="adjustment", description=payload.description, reference_type="manual_adjustment", reference_id=payload.description[:50], folio_id=payload.folio_id, reservation_id=payload.reservation_id, created_by=user.id, property_id=property_.id, lines=payload.lines); audit(db, user.id, "adjustment", "financial_transaction", tx.id, {"description": payload.description, "folio_id": payload.folio_id, "reservation_id": payload.reservation_id}); db.commit(); db.refresh(tx); return {"id": tx.id, "transaction_no": tx.transaction_no, "business_date": tx.business_date, "status": tx.status}
     except (ValueError, KeyError) as exc:
         db.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/folios/{folio_id}/windows", status_code=201)
 def create_folio_window(folio_id: int, payload: WindowCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = db.get(Folio, folio_id)
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id))
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
-    if payload.guest_id and not db.get(Guest, payload.guest_id): raise HTTPException(status_code=400, detail="Guest does not exist")
+    if payload.guest_id and not db.scalar(select(Guest.id).where(Guest.id == payload.guest_id, Guest.property_id == property_.id)): raise HTTPException(status_code=404, detail="Guest not found")
     window = FolioWindow(folio_id=folio_id, name=payload.name, payer_type=payload.payer_type, guest_id=payload.guest_id, group_id=payload.group_id); db.add(window); db.flush(); audit(db, user.id, "create", "folio_window", window.id, {"folio_id": folio_id, "name": window.name}); db.commit(); db.refresh(window)
     return {"id": window.id, "folio_id": window.folio_id, "name": window.name, "payer_type": window.payer_type, "guest_id": window.guest_id, "group_id": window.group_id, "status": window.status}
 
 
 @router.get("/folios/{folio_id}/windows")
-def list_folio_windows(folio_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    if not db.get(Folio, folio_id): raise HTTPException(status_code=404, detail="Folio not found")
+def list_folio_windows(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id))
+    if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     windows = db.scalars(select(FolioWindow).where(FolioWindow.folio_id == folio_id).order_by(FolioWindow.id)).all()
     return [{"id": w.id, "folio_id": w.folio_id, "name": w.name, "payer_type": w.payer_type, "guest_id": w.guest_id, "group_id": w.group_id, "status": w.status} for w in windows]
 
 
 @router.post("/folios/{folio_id}/windows/{window_id}/transfer", status_code=201)
 def transfer_item_to_window(folio_id: int, window_id: int, payload: WindowTransfer, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = db.get(Folio, folio_id); window = db.get(FolioWindow, window_id); item = db.get(FolioItem, payload.item_id)
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id)); window = db.get(FolioWindow, window_id); item = db.get(FolioItem, payload.item_id)
     if not folio or not window or not item or window.folio_id != folio_id or item.folio_id != folio_id: raise HTTPException(status_code=404, detail="Folio, window or item not found")
     mapping = db.scalar(select(FolioItemWindow).where(FolioItemWindow.folio_item_id == item.id));
     if mapping: mapping.folio_window_id = window.id
