@@ -67,6 +67,12 @@ def normalize_idempotency_key(value: str | None) -> str | None:
     return normalized
 
 
+def scoped_idempotency_key(property_id: int, key: str) -> str:
+    """Persist a stable key that is unique within, not across, hotel properties."""
+    digest = sha256(f"property:{property_id}:idempotency:{key}".encode("utf-8")).hexdigest()
+    return f"p{property_id}:{digest}"
+
+
 def idempotency_fingerprint(*, transaction_type: str, description: str, lines: list[dict], reference_type: str | None, reference_id: str | None, folio_id: int | None, reservation_id: int | None, reversal_of_id: int | None) -> str:
     payload = {
         "transaction_type": transaction_type,
@@ -188,15 +194,35 @@ def post_transaction(
         reversal_of_id=reversal_of_id,
     )
 
-    if key:
-        existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
+    persisted_key = scoped_idempotency_key(property_id, key) if key else None
+
+    def find_existing_keyed_transaction() -> FinancialTransaction | None:
+        if not key or persisted_key is None:
+            return None
+        existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == persisted_key))
         if existing is not None:
-            if existing.idempotency_fingerprint:
-                if existing.idempotency_fingerprint != fingerprint:
-                    raise ValueError("Idempotency key is already bound to a different financial transaction")
-            elif existing.transaction_type != transaction_type or existing.description != description:
-                raise ValueError("Idempotency key is already bound to a different financial transaction")
             return existing
+        # Compatibility for transactions written before keys were property-scoped.
+        legacy = db.scalar(select(FinancialTransaction).where(
+            FinancialTransaction.idempotency_key == key,
+            FinancialTransaction.property_id == property_id,
+        ))
+        return legacy
+
+    def validate_existing_keyed_transaction(existing: FinancialTransaction) -> FinancialTransaction:
+        if existing.property_id != property_id:
+            raise ValueError("Idempotency key is already bound to another property")
+        if existing.idempotency_fingerprint:
+            if existing.idempotency_fingerprint != fingerprint:
+                raise ValueError("Idempotency key is already bound to a different financial transaction")
+        elif existing.transaction_type != transaction_type or existing.description != description:
+            raise ValueError("Idempotency key is already bound to a different financial transaction")
+        return existing
+
+    if key:
+        existing = find_existing_keyed_transaction()
+        if existing is not None:
+            return validate_existing_keyed_transaction(existing)
 
     state = lock_current_business_date(db, property_id=property_id)
     tx_date = business_date or state.current_business_date
@@ -209,7 +235,7 @@ def post_transaction(
     transaction = FinancialTransaction(
         property_id=property_id,
         transaction_no=new_transaction_no(tx_date),
-        idempotency_key=key,
+        idempotency_key=persisted_key,
         idempotency_fingerprint=fingerprint if key else None,
         business_date=tx_date,
         transaction_type=transaction_type,
@@ -244,11 +270,9 @@ def post_transaction(
             db.flush()
     except IntegrityError:
         if key:
-            existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
+            existing = find_existing_keyed_transaction()
             if existing is not None:
-                if existing.idempotency_fingerprint and existing.idempotency_fingerprint != fingerprint:
-                    raise ValueError("Idempotency key is already bound to a different financial transaction")
-                return existing
+                return validate_existing_keyed_transaction(existing)
         raise
 
     return transaction
@@ -309,6 +333,7 @@ def reverse_transaction(db: Session, *, transaction_id: int, created_by: int, re
         business_date=original.business_date if preserve_business_date else None,
         allow_historical_business_date=preserve_business_date,
         reversal_of_id=original.id,
+        property_id=original.property_id,
         idempotency_key=f"reversal:{original.id}",
         lines=reversed_lines,
     )
