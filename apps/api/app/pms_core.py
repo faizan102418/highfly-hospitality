@@ -12,6 +12,7 @@ from .auth import require_roles
 from .db import Base, get_db
 from .models import AuditLog, DepositTransaction, Folio, Guest, Reservation, ReservationRoom, Room, User
 from .ledger import post_deposit_received
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api", tags=["pms-core"])
 MONEY = Decimal("0.01")
@@ -134,6 +135,30 @@ def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: i
     db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
+def authorized_reservation_or_404(db: Session, reservation_id: int, user_id: int) -> Reservation:
+    reservation = db.get(Reservation, reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
+    return reservation
+
+
+def authorized_stay_or_404(db: Session, stay_id: int, user_id: int) -> tuple[Stay, Reservation]:
+    stay = db.get(Stay, stay_id)
+    if stay is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    reservation = authorized_reservation_or_404(db, stay.reservation_id, user_id)
+    return stay, reservation
+
+
+def authorized_folio_or_404(db: Session, folio_id: int, user_id: int) -> tuple[Folio, Reservation]:
+    folio = db.get(Folio, folio_id)
+    if folio is None:
+        raise HTTPException(status_code=404, detail="Folio not found")
+    reservation = authorized_reservation_or_404(db, folio.reservation_id, user_id)
+    return folio, reservation
+
+
 @router.post("/groups", response_model=GroupResponse, status_code=201)
 def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     if db.scalar(select(BookingGroup.id).where(BookingGroup.code == payload.code)):
@@ -202,9 +227,10 @@ def group_reservations(group_id: int, db: Session = Depends(get_db), _: User = D
 
 @router.post("/reservations/{reservation_id}/stays", response_model=dict, status_code=201)
 def create_reservation_stays(reservation_id: int, payload: list[StayCreate], db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation:
-        raise HTTPException(status_code=404, detail="Reservation not found")
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
+    reservation_guest = db.get(Guest, reservation.guest_id)
+    if reservation_guest is None or reservation_guest.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Reservation guest does not belong to the reservation property")
     if not payload:
         raise HTTPException(status_code=400, detail="At least one room stay is required")
     if db.scalar(select(Stay.id).where(Stay.reservation_id == reservation_id)):
@@ -222,8 +248,13 @@ def create_reservation_stays(reservation_id: int, payload: list[StayCreate], db:
         room = db.get(Room, item.room_id)
         if not room:
             raise HTTPException(status_code=400, detail=f"Room {item.room_id} does not exist")
-        if item.guest_id and not db.get(Guest, item.guest_id):
-            raise HTTPException(status_code=400, detail=f"Guest {item.guest_id} does not exist")
+        if room.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Room belongs to a different property than the reservation")
+        stay_guest = db.get(Guest, item.guest_id) if item.guest_id else reservation_guest
+        if stay_guest is None:
+            raise HTTPException(status_code=400, detail="Stay guest does not exist")
+        if stay_guest.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Stay guest belongs to a different property")
         discount, net = calculate_discount(item.agreed_rate, item.discount_percent, item.discount_amount)
         if item.deposit_received > item.deposit_required:
             raise HTTPException(status_code=400, detail="Deposit received cannot exceed deposit required")
@@ -273,9 +304,8 @@ def create_reservation_stays(reservation_id: int, payload: list[StayCreate], db:
 
 
 @router.get("/reservations/{reservation_id}/stays")
-def list_reservation_stays(reservation_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    if not db.get(Reservation, reservation_id):
-        raise HTTPException(status_code=404, detail="Reservation not found")
+def list_reservation_stays(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    authorized_reservation_or_404(db, reservation_id, user.id)
     rows = db.execute(select(Stay, Room.number, Guest.full_name).join(Room, Room.id == Stay.room_id).outerjoin(Guest, Guest.id == Stay.guest_id).where(Stay.reservation_id == reservation_id).order_by(Stay.id)).all()
     return [
         {"id": stay.id, "room_id": stay.room_id, "room_number": room_number, "guest_id": stay.guest_id, "guest_name": guest_name, "status": stay.status, "check_in": stay.check_in, "check_out": stay.check_out, "actual_check_in": stay.actual_check_in, "actual_check_out": stay.actual_check_out, "agreed_rate": stay.agreed_rate, "discount_percent": stay.discount_percent, "discount_amount": stay.discount_amount, "payment_due_policy": stay.payment_due_policy, "deposit_required": stay.deposit_required, "deposit_received": stay.deposit_received, "notes": stay.notes}
@@ -285,9 +315,7 @@ def list_reservation_stays(reservation_id: int, db: Session = Depends(get_db), _
 
 @router.patch("/stays/{stay_id}/discount")
 def update_stay_discount(stay_id: int, discount_percent: Decimal = 0, discount_amount: Decimal = 0, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = db.get(Stay, stay_id)
-    if not stay:
-        raise HTTPException(status_code=404, detail="Stay not found")
+    stay, _reservation = authorized_stay_or_404(db, stay_id, user.id)
     if discount_percent < 0 or discount_percent > 100 or discount_amount < 0:
         raise HTTPException(status_code=400, detail="Discount values are invalid")
     discount, net = calculate_discount(stay.agreed_rate + stay.discount_amount, discount_percent, discount_amount)
@@ -301,13 +329,15 @@ def update_stay_discount(stay_id: int, discount_percent: Decimal = 0, discount_a
 
 @router.post("/folios/{folio_id}/windows", status_code=201)
 def create_folio_window(folio_id: int, name: str, payer_type: str = "guest", guest_id: int | None = None, group_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = db.get(Folio, folio_id)
-    if not folio:
-        raise HTTPException(status_code=404, detail="Folio not found")
+    folio, reservation = authorized_folio_or_404(db, folio_id, user.id)
     if payer_type not in {"guest", "group", "company", "other"}:
         raise HTTPException(status_code=400, detail="Invalid payer type")
-    if payer_type == "guest" and guest_id and not db.get(Guest, guest_id):
-        raise HTTPException(status_code=400, detail="Guest does not exist")
+    if payer_type == "guest" and guest_id:
+        guest = db.get(Guest, guest_id)
+        if guest is None:
+            raise HTTPException(status_code=400, detail="Guest does not exist")
+        if guest.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
     if payer_type in {"group", "company"} and group_id and not db.get(BookingGroup, group_id):
         raise HTTPException(status_code=400, detail="Group does not exist")
     window = FolioWindow(folio_id=folio_id, name=name.strip(), payer_type=payer_type, guest_id=guest_id, group_id=group_id)
@@ -318,7 +348,6 @@ def create_folio_window(folio_id: int, name: str, payer_type: str = "guest", gue
 
 
 @router.get("/folios/{folio_id}/windows")
-def list_folio_windows(folio_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    if not db.get(Folio, folio_id):
-        raise HTTPException(status_code=404, detail="Folio not found")
+def list_folio_windows(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
+    authorized_folio_or_404(db, folio_id, user.id)
     return db.scalars(select(FolioWindow).where(FolioWindow.folio_id == folio_id).order_by(FolioWindow.id)).all()
