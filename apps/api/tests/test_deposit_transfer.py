@@ -13,7 +13,7 @@ import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 import app.financial_authority  # noqa: F401
 from app.deposit_transfer import DepositTransferCreate, stay_deposit_balance, transfer_deposit
-from app.ledger import post_deposit_received
+from app.ledger import post_deposit_received, scoped_idempotency_key
 from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, Reservation, Role, User
 from app.tenancy import PropertyUserAccess
 from app.pms_core import Stay
