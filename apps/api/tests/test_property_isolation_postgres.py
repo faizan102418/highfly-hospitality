@@ -14,6 +14,17 @@ from app.tenancy import Organization, Property, PropertyUserAccess, resolve_auth
 from app.pms_core import Stay
 from app.phase_a_workflows import stay_or_404 as workflow_stay_or_404
 from app.phase_a_completion import stay_or_404 as completion_stay_or_404
+from app.reservation_workflows import (
+    ActionReason,
+    ReservationRoomSetup,
+    ReservationUpdate,
+    ReservationWorkflowCreate,
+    cancel_reservation,
+    create_reservation_workflow,
+    mark_no_show,
+    reservation_availability_check,
+    update_reservation,
+)
 from tenant_test_support import ensure_test_property
 
 
@@ -128,6 +139,35 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as folio_denied:
                 get_folio(other_folio.id, db, user)
             self.assertEqual(folio_denied.exception.status_code, 404)
+
+            original_dates = (other_reservation.check_in, other_reservation.check_out)
+            original_status = other_reservation.status
+            reservation_calls = (
+                lambda: update_reservation(other_reservation.id, ReservationUpdate(notes="unauthorized"), db, user),
+                lambda: cancel_reservation(other_reservation.id, ActionReason(reason="unauthorized"), db, user),
+                lambda: mark_no_show(other_reservation.id, ActionReason(reason="unauthorized"), db, user),
+                lambda: reservation_availability_check(other_reservation.id, db, user),
+            )
+            for call in reservation_calls:
+                with self.subTest(call=call):
+                    with self.assertRaises(HTTPException) as reservation_denied:
+                        call()
+                    self.assertEqual(reservation_denied.exception.status_code, 403)
+            self.assertEqual((other_reservation.check_in, other_reservation.check_out), original_dates)
+            self.assertEqual(other_reservation.status, original_status)
+
+            with self.assertRaises(HTTPException) as create_denied:
+                create_reservation_workflow(
+                    ReservationWorkflowCreate(
+                        guest_id=other_guest.id,
+                        check_in=date(2026, 10, 1),
+                        check_out=date(2026, 10, 2),
+                        rooms=[ReservationRoomSetup(room_id=1, agreed_rate=Decimal("100.00"))],
+                    ),
+                    db,
+                    user,
+                )
+            self.assertEqual(create_denied.exception.status_code, 409)
             db.rollback()
 
 
