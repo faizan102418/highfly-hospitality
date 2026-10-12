@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import BusinessDateState, Role, StockItem, StockMovement, User
+from app.tenancy import Organization, Property
 from app.purchasing import (
     POLineCreate,
     PurchaseOrderCreate,
@@ -141,6 +142,83 @@ class PurchasingIntegrityTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(self.db.get(StockItem, self.stock.id).on_hand, Decimal("10.000"))
 
+
+    def test_same_receipt_idempotency_key_is_independent_across_properties(self):
+        org = Organization(name="Other Purchasing Org", slug="other-purchasing-org")
+        self.db.add(org)
+        self.db.flush()
+        other_property = Property(
+            organization_id=org.id, name="Other Purchasing Property", code="PUR-OTHER",
+            slug="other-purchasing-property", timezone="UTC", currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
+        other_user = User(username="purchasing-admin-other", password_hash="test", role_id=self.user.role_id)
+        other_stock = StockItem(
+            property_id=other_property.id, sku="RICE-PUR-OTHER", name="Rice Purchasing Other",
+            unit="kg", on_hand=Decimal("6.000"),
+        )
+        self.db.add_all([
+            other_user, other_stock,
+            BusinessDateState(property_id=other_property.id, current_business_date=self.today),
+        ])
+        self.db.flush()
+        ensure_test_property_access(self.db, other_user.id, other_property.id)
+        self.db.add(StockMovement(
+            stock_item_id=other_stock.id, business_date=self.today, quantity=Decimal("6.000"),
+            movement_type="opening", reference_type="stock_item", reference_id=str(other_stock.id),
+            unit_cost=Decimal("0.00"), created_by=other_user.id,
+        ))
+        self.db.commit()
+
+        other_supplier = create_supplier(
+            SupplierCreate(code="SUP-OTHER", name="Other Foods"), self.db, other_user,
+        )
+        other_po = create_purchase_order(
+            PurchaseOrderCreate(
+                supplier_id=other_supplier["id"],
+                lines=[POLineCreate(
+                    stock_item_id=other_stock.id, ordered_quantity=Decimal("5.000"),
+                    unit_cost=Decimal("50.00"), description="Other rice",
+                )],
+            ),
+            self.db, other_user,
+        )
+        other_po = approve_purchase_order(other_po["id"], self.db, other_user)
+        line_id = other_po["lines"][0]["id"]
+
+        primary_po = approve_purchase_order(self.po["id"], self.db, self.user)
+        with self.assertRaises(HTTPException) as denied:
+            receive_purchase_order(
+                other_po["id"],
+                ReceiveRequest(lines=[ReceiveLine(
+                    purchase_order_line_id=line_id, quantity=Decimal("1.000"),
+                )]),
+                "foreign-po-key", self.db, self.user,
+            )
+        self.assertEqual(denied.exception.status_code, 404)
+        self.assertEqual(self.db.get(StockItem, other_stock.id).on_hand, Decimal("6.000"))
+
+        first = receive_purchase_order(
+            primary_po["id"],
+            ReceiveRequest(lines=[ReceiveLine(
+                purchase_order_line_id=primary_po["lines"][0]["id"], quantity=Decimal("2.000"),
+            )]),
+            "shared-receipt-key", self.db, self.user,
+        )
+        second = receive_purchase_order(
+            other_po["id"],
+            ReceiveRequest(lines=[ReceiveLine(
+                purchase_order_line_id=line_id, quantity=Decimal("2.000"),
+            )]),
+            "shared-receipt-key", self.db, other_user,
+        )
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertFalse(second["replayed"])
+        self.assertEqual(self.db.get(StockItem, self.stock.id).on_hand, Decimal("12.000"))
+        self.assertEqual(self.db.get(StockItem, other_stock.id).on_hand, Decimal("8.000"))
+        self.assertEqual(self.db.scalar(select(func.count()).select_from(goods_receipts)), 2)
 
 if __name__ == "__main__":
     unittest.main()
