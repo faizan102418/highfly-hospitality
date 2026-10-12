@@ -14,6 +14,7 @@ from app.billing import (
     add_payment,
     close_folio,
     get_folio,
+    FolioDepositCreate,
     remove_folio_item,
     update_folio_item,
 )
@@ -156,7 +157,7 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
                 lambda: update_folio_item(other_folio.id, foreign_item.id, FolioItemUpdate(description="Tampered", category="other", quantity=Decimal("1"), unit_price=Decimal("1")), db, user),
                 lambda: remove_folio_item(other_folio.id, foreign_item.id, db, user),
                 lambda: add_payment(other_folio.id, PaymentCreate(amount=Decimal("1.00"), method="cash"), None, db, user),
-                lambda: add_folio_deposit(other_folio.id, __import__("app.billing", fromlist=["FolioDepositCreate"]).FolioDepositCreate(amount=Decimal("1.00"), method="cash"), db, user),
+                lambda: add_folio_deposit(other_folio.id, FolioDepositCreate(amount=Decimal("1.00"), method="cash"), db, user),
                 lambda: close_folio(other_folio.id, db, user),
             )
             for call in denied_calls:
