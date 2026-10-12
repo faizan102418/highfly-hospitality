@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from secrets import token_hex
@@ -489,6 +490,9 @@ def add_pos_payment(
     key = (idempotency_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required for POS payments")
+    if len(key) > 100:
+        raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
+    amount = money(payload.amount)
     property_ = resolve_authorized_property(db, user.id)
     order = db.scalar(select(RestaurantOrder).where(RestaurantOrder.id == order_id, RestaurantOrder.property_id == property_.id).with_for_update())
     if order is None:
@@ -505,15 +509,27 @@ def add_pos_payment(
         raise HTTPException(status_code=409, detail="Order folio is unavailable")
     existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(property_.id, key)))
     if existing is not None:
-        if existing.transaction_type != "folio_payment" or existing.folio_id != folio.id:
+        if existing.transaction_type != "folio_payment" or existing.folio_id != folio.id or not (existing.description or "").startswith("POS payment #"):
             raise HTTPException(status_code=409, detail="Idempotency key is already bound to another financial operation")
-        payment = db.get(Payment, int(existing.reference_id)) if existing.reference_id else None
-        if payment is None:
-            raise HTTPException(status_code=409, detail="Idempotent POS payment record is missing")
+        payment_id = int(existing.reference_id) if existing.reference_id and existing.reference_id.isdigit() else None
+        payment = db.get(Payment, payment_id) if payment_id is not None else None
+        if payment is None or payment.folio_id != folio.id:
+            raise HTTPException(status_code=409, detail="Idempotent POS payment record is missing or incompatible")
+        if payment.amount != amount or payment.method != payload.method or payment.reference != payload.reference:
+            raise HTTPException(status_code=409, detail="Idempotency key is already bound to different payment parameters")
+        audit_rows = db.scalars(
+            select(AuditLog).where(
+                AuditLog.property_id == property_.id,
+                AuditLog.action == "payment",
+                AuditLog.entity_type == "restaurant_order",
+                AuditLog.entity_id == str(order.id),
+            )
+        ).all()
+        if not any(json.loads(row.details).get("payment_id") == payment.id for row in audit_rows):
+            raise HTTPException(status_code=409, detail="Idempotency key is bound to a payment for a different POS order")
         return {"id": payment.id, "order_id": order.id, "folio_id": folio.id, "amount": payment.amount, "method": payment.method, "reference": payment.reference, "replayed": True, "balance": folio_ledger_summary(db, folio.id).balance}
 
     summary = folio_ledger_summary(db, folio.id)
-    amount = money(payload.amount)
     if amount > summary.balance:
         raise HTTPException(status_code=409, detail=f"Payment exceeds outstanding folio balance of {summary.balance}")
     reservation = db.get(Reservation, folio.reservation_id)
