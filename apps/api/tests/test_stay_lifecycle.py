@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from tenant_test_support import ensure_test_property
+from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.pms_core import Stay
@@ -41,6 +41,8 @@ class StayLifecycleTests(unittest.TestCase):
         self.db.flush()
         user = User(username=f"reception-{id(self)}", password_hash="test", role_id=role.id)
         self.db.add(user)
+        self.db.flush()
+        ensure_test_property_access(self.db, user.id, self.property.id)
         room_type = RoomType(property_id=self.property.id, name=f"Standard-{guest.id}", base_rate=100)
         self.db.add(room_type)
         self.db.flush()
