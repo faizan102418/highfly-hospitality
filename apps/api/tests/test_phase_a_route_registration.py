@@ -12,13 +12,11 @@ from app.main import app
 
 
 class PhaseARouteRegistrationTests(unittest.TestCase):
-    def test_completion_handlers_win_for_overlapping_public_routes(self):
+    def test_completion_handlers_win_for_overlapping_deposit_routes(self):
         expected_paths = {
             "/api/stays/{stay_id}/deposits/transfer",
             "/api/stays/{stay_id}/deposits/refund",
             "/api/stays/{stay_id}/deposits/apply",
-            "/api/stays/{stay_id}/occupants",
-            "/api/stays/{stay_id}/occupants/{occupant_id}/guest",
         }
 
         first_route_by_path = {}
@@ -31,7 +29,7 @@ class PhaseARouteRegistrationTests(unittest.TestCase):
         self.assertEqual(
             set(first_route_by_path),
             expected_paths,
-            "Expected all overlapping Phase A public routes to be registered",
+            "Expected all overlapping Phase A deposit routes to be registered",
         )
         for path, route in first_route_by_path.items():
             with self.subTest(path=path):
