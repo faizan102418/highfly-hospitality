@@ -25,7 +25,12 @@ class PhaseARouteRegistrationTests(unittest.TestCase):
         self.assertEqual(
             {route.endpoint.__name__ for route in completion_routes},
             expected_handlers,
-            "Expected all completion deposit handlers to be mounted",
+            "Expected all completion deposit handlers to be mounted; deposit routes="
+            + repr([
+                (route.path, sorted(route.methods), route.endpoint.__module__, route.endpoint.__name__)
+                for route in app.routes
+                if isinstance(route, APIRoute) and "deposit" in route.path
+            ]),
         )
 
         for completion_route in completion_routes:
