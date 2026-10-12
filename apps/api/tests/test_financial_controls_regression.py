@@ -12,7 +12,7 @@ import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.finance_controls import post_deposit, require_open_business_date, transfer_folio_item
-from app.financial_ops import AdjustmentCreate, WindowCreate, create_adjustment, create_folio_window, folio_balance, refund_payment
+from app.financial_ops import AdjustmentCreate, RefundCreate, WindowCreate, create_adjustment, create_folio_window, folio_balance, refund_payment
 from app.financial_models import Invoice, InvoiceSequence
 from app.ledger import post_transaction, reverse_transaction
 from app.models import (
@@ -190,6 +190,28 @@ class FinancialControlsRegressionTests(unittest.TestCase):
         self.db.commit()
         self.db.refresh(stay)
         return stay
+
+    def test_refund_idempotency_rejects_changed_reference(self):
+        first = RefundCreate(
+            payment_id=self.payment.id,
+            amount=Decimal("10.00"),
+            method="cash",
+            reference="receipt-A",
+            reason="Guest refund",
+        )
+        refund_payment(self.folio_a.id, first, "refund-reference-key", self.db, self.user)
+
+        changed = RefundCreate(
+            payment_id=self.payment.id,
+            amount=Decimal("10.00"),
+            method="cash",
+            reference="receipt-B",
+            reason="Guest refund",
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            refund_payment(self.folio_a.id, changed, "refund-reference-key", self.db, self.user)
+
+        self.assertEqual(ctx.exception.status_code, 409)
 
     def test_financial_operations_reject_foreign_property_folios(self):
         _, foreign_reservation, foreign_folio = self._foreign_folio()
