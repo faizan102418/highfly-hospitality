@@ -138,8 +138,11 @@ def check_in_stay(stay_id: int, payload: StayCheckInPayload | None = None, db: S
     if stay.status != "reserved":
         raise HTTPException(status_code=409, detail="Only a reserved room stay can be checked in")
     room = db.get(Room, stay.room_id)
-    if not room:
+    reservation = db.get(Reservation, stay.reservation_id)
+    if not room or reservation is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    if room.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Stay room belongs to a different property")
     if room.status not in {"reserved", "available"}:
         raise HTTPException(status_code=409, detail="Room is not ready for check-in")
     stay.status = "checked_in"
@@ -165,6 +168,9 @@ def change_stay_occupant_guest(stay_id: int, occupant_id: int, payload: Occupant
     guest = db.get(Guest, payload.guest_id)
     if not guest:
         raise HTTPException(status_code=400, detail="Guest does not exist")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None or guest.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Occupant guest belongs to a different property")
     if occupant.guest_id == payload.guest_id:
         raise HTTPException(status_code=400, detail="Occupant already uses this guest")
     duplicate = db.scalar(select(StayOccupant.id).where(StayOccupant.stay_id == stay.id, StayOccupant.guest_id == payload.guest_id, StayOccupant.id != occupant.id))
@@ -185,6 +191,9 @@ def share_stay_with_occupant(stay_id: int, payload: OccupantGuestChange, db: Ses
     guest = db.get(Guest, payload.guest_id)
     if not guest:
         raise HTTPException(status_code=400, detail="Guest does not exist")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None or guest.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Occupant guest belongs to a different property")
     existing = db.scalar(select(StayOccupant.id).where(StayOccupant.stay_id == stay.id, StayOccupant.guest_id == payload.guest_id))
     if existing:
         raise HTTPException(status_code=409, detail="Guest already shares this room stay")
@@ -199,6 +208,10 @@ def share_stay_with_occupant(stay_id: int, payload: OccupantGuestChange, db: Ses
 def transfer_deposit(stay_id: int, payload: DepositTransferCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     source = stay_or_404(db, stay_id, user.id)
     target = stay_or_404(db, payload.target_stay_id, user.id)
+    source_reservation = db.get(Reservation, source.reservation_id)
+    target_reservation = db.get(Reservation, target.reservation_id)
+    if source_reservation is None or target_reservation is None or source_reservation.property_id != target_reservation.property_id:
+        raise HTTPException(status_code=409, detail="Deposit transfer stays must belong to the same property")
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Source and target stay must be different")
     available = deposit_balance(db, source.id)
