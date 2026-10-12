@@ -102,6 +102,11 @@ def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: i
     db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details, default=str)))
 
 
+def scoped_idempotency_key(property_id: int, key: str) -> str:
+    # Keep caller-provided keys private to each property without a schema migration.
+    return sha256(f"{property_id}:{key}".encode()).hexdigest()
+
+
 def receipt_fingerprint(po_id: int, business_date: date, lines: list[ReceiveLine], notes: str | None) -> str:
     payload = {"purchase_order_id": po_id, "business_date": business_date.isoformat(),
         "lines": sorted([{"purchase_order_line_id": x.purchase_order_line_id, "quantity": str(qty(x.quantity)), "unit_cost": None if x.unit_cost is None else str(money(x.unit_cost))} for x in lines], key=lambda x: x["purchase_order_line_id"]),
@@ -208,7 +213,19 @@ def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key:
     po = db.execute(select(purchase_orders).where(purchase_orders.c.id == po_id, purchase_orders.c.property_id == property_.id).with_for_update()).mappings().first()
     if po is None: raise HTTPException(status_code=404, detail="Purchase order not found")
     expected = receipt_fingerprint(po_id, business_date, payload.lines, payload.notes)
-    existing = db.execute(select(goods_receipts).where(goods_receipts.c.idempotency_key == key).with_for_update()).mappings().first()
+    stored_key = scoped_idempotency_key(property_.id, key)
+    existing = db.execute(select(goods_receipts).where(goods_receipts.c.idempotency_key == stored_key).with_for_update()).mappings().first()
+    if existing is None:
+        # Backward compatibility: only replay legacy raw keys from this property.
+        existing = db.execute(
+            select(goods_receipts)
+            .join(purchase_orders, purchase_orders.c.id == goods_receipts.c.purchase_order_id)
+            .where(
+                goods_receipts.c.idempotency_key == key,
+                purchase_orders.c.property_id == property_.id,
+            )
+            .with_for_update()
+        ).mappings().first()
     if existing is not None:
         if existing["idempotency_fingerprint"] != expected: raise HTTPException(status_code=409, detail="Idempotency key is already bound to a different purchase receipt")
         return {"id": existing["id"], "grn_no": existing["grn_no"], "purchase_order_id": existing["purchase_order_id"], "business_date": existing["business_date"], "status": "posted", "replayed": True}
@@ -225,7 +242,7 @@ def receive_purchase_order(po_id: int, payload: ReceiveRequest, idempotency_key:
         line = po_lines[req.purchase_order_line_id]
         if qty(line["received_quantity"] + req.quantity) > qty(line["ordered_quantity"]): raise HTTPException(status_code=409, detail=f"Receipt would exceed ordered quantity for PO line {line['id']}")
         if not stocks[line["stock_item_id"]].active: raise HTTPException(status_code=409, detail=f"Stock item {line['stock_item_id']} is inactive")
-    receipt = db.execute(insert(goods_receipts).values(grn_no=f"GRN-{business_date.strftime('%Y%m%d')}-{token_hex(4).upper()}", purchase_order_id=po_id, supplier_id=po["supplier_id"], business_date=business_date, idempotency_key=key, idempotency_fingerprint=expected, created_by=user.id, received_at=datetime.utcnow(), notes=payload.notes).returning(goods_receipts)).mappings().one()
+    receipt = db.execute(insert(goods_receipts).values(grn_no=f"GRN-{business_date.strftime('%Y%m%d')}-{token_hex(4).upper()}", purchase_order_id=po_id, supplier_id=po["supplier_id"], business_date=business_date, idempotency_key=stored_key, idempotency_fingerprint=expected, created_by=user.id, received_at=datetime.utcnow(), notes=payload.notes).returning(goods_receipts)).mappings().one()
     for req in payload.lines:
         line = po_lines[req.purchase_order_line_id]; incoming = qty(req.quantity); unit_cost = money(req.unit_cost if req.unit_cost is not None else line["unit_cost"]); stock = stocks[line["stock_item_id"]]
         stock.on_hand = qty(stock.on_hand + incoming)
