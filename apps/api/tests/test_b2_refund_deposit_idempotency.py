@@ -137,7 +137,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
             1,
         )
         self.assertEqual(
-            self.db.scalar(select(func.count()).select_from(FinancialTransaction).where(FinancialTransaction.idempotency_key == "refund-001")),
+            self.db.scalar(select(func.count()).select_from(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(self.property.id, "refund-001"))),
             1,
         )
 
