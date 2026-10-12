@@ -310,7 +310,14 @@ def post_deposit_received(db: Session, *, stay_id: int, folio_id: int | None, re
 
 
 def reverse_transaction(db: Session, *, transaction_id: int, created_by: int, reason: str, preserve_business_date: bool = False) -> FinancialTransaction:
-    original = db.get(FinancialTransaction, transaction_id)
+    # Serialize reversals of the same source transaction on PostgreSQL. Without
+    # this row lock, concurrent requests can both pass the status/existence checks
+    # before either one writes its reversal.
+    original = db.scalar(
+        select(FinancialTransaction)
+        .where(FinancialTransaction.id == transaction_id)
+        .with_for_update()
+    )
     if original is None:
         raise ValueError("Financial transaction not found")
     if original.status != "posted":
