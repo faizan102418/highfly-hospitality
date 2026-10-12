@@ -9,6 +9,9 @@ from sqlalchemy.pool import StaticPool
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
+from app.billing import add_payment as add_folio_payment
+from app.ledger import post_transaction
+from app.schemas import PaymentCreate as FolioPaymentCreate
 from app.models import (
     BusinessDateState,
     Folio,
@@ -131,6 +134,30 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         second = add_pos_payment(order.id, payload, "pos-key-1", self.db, self.user)
         self.assertEqual(first["id"], second["id"])
         self.assertTrue(second["replayed"])
+        self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
+
+    def test_folio_payment_replay_rejects_changed_parameters(self):
+        post_transaction(
+            self.db,
+            transaction_type="folio_charge",
+            description="Seed receivable",
+            folio_id=self.folio_id,
+            reservation_id=self.reservation_id,
+            property_id=self.property.id,
+            lines=[
+                {"account": "Guest Receivables", "direction": "debit", "amount": Decimal("200.00"), "folio_id": self.folio_id},
+                {"account": "Room Revenue", "direction": "credit", "amount": Decimal("200.00"), "folio_id": self.folio_id},
+            ],
+        )
+        self.db.commit()
+        original = FolioPaymentCreate(amount=Decimal("100.00"), method="cash", reference="billing-ref")
+        add_folio_payment(self.folio_id, original, "folio-conflict-key", self.db, self.user)
+
+        changed = FolioPaymentCreate(amount=Decimal("90.00"), method="cash", reference="billing-ref")
+        with self.assertRaises(HTTPException) as ctx:
+            add_folio_payment(self.folio_id, changed, "folio-conflict-key", self.db, self.user)
+
+        self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
 
     def test_pos_payment_replay_rejects_changed_parameters(self):
