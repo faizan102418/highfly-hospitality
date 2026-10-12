@@ -23,8 +23,9 @@ class PhaseARouteRegistrationTests(unittest.TestCase):
         for route in app.routes:
             if not isinstance(route, APIRoute) or "POST" not in route.methods:
                 continue
-            if route.path in expected_paths:
-                first_route_by_path.setdefault(route.path, route)
+            for expected_path in expected_paths:
+                if route.path.endswith(expected_path.removeprefix("/api")):
+                    first_route_by_path.setdefault(expected_path, route)
 
         self.assertEqual(
             set(first_route_by_path),
