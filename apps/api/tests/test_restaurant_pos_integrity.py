@@ -9,6 +9,9 @@ from sqlalchemy.pool import StaticPool
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
+from app.billing import add_payment as add_folio_payment
+from app.ledger import post_transaction
+from app.schemas import PaymentCreate as FolioPaymentCreate
 from app.models import (
     BusinessDateState,
     Folio,
@@ -131,6 +134,57 @@ class RestaurantPosIntegrityTests(unittest.TestCase):
         second = add_pos_payment(order.id, payload, "pos-key-1", self.db, self.user)
         self.assertEqual(first["id"], second["id"])
         self.assertTrue(second["replayed"])
+        self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
+
+    def test_folio_payment_replay_rejects_changed_parameters(self):
+        post_transaction(
+            self.db,
+            transaction_type="folio_charge",
+            description="Seed receivable",
+            folio_id=self.folio_id,
+            reservation_id=self.reservation_id,
+            property_id=self.property.id,
+            lines=[
+                {"account": "Guest Receivables", "direction": "debit", "amount": Decimal("200.00"), "folio_id": self.folio_id},
+                {"account": "Room Revenue", "direction": "credit", "amount": Decimal("200.00"), "folio_id": self.folio_id},
+            ],
+        )
+        self.db.commit()
+        original = FolioPaymentCreate(amount=Decimal("100.00"), method="cash", reference="billing-ref")
+        add_folio_payment(self.folio_id, original, "folio-conflict-key", self.db, self.user)
+
+        changed = FolioPaymentCreate(amount=Decimal("90.00"), method="cash", reference="billing-ref")
+        with self.assertRaises(HTTPException) as ctx:
+            add_folio_payment(self.folio_id, changed, "folio-conflict-key", self.db, self.user)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
+
+    def test_pos_payment_replay_rejects_changed_parameters(self):
+        order, _ = self._make_order(order_no="POS-TEST-7", price=Decimal("1000.00"))
+        post_order(order.id, self.db, self.user)
+        original = PaymentCreate(amount=Decimal("1100.00"), method="cash", reference="r1")
+        add_pos_payment(order.id, original, "pos-conflict-key", self.db, self.user)
+
+        changed = PaymentCreate(amount=Decimal("1000.00"), method="cash", reference="r1")
+        with self.assertRaises(HTTPException) as ctx:
+            add_pos_payment(order.id, changed, "pos-conflict-key", self.db, self.user)
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
+
+    def test_pos_payment_key_cannot_replay_for_another_order_on_same_folio(self):
+        first_order, _ = self._make_order(order_no="POS-TEST-8", price=Decimal("1000.00"))
+        post_order(first_order.id, self.db, self.user)
+        payload = PaymentCreate(amount=Decimal("1100.00"), method="cash", reference="same-ref")
+        add_pos_payment(first_order.id, payload, "pos-order-bound-key", self.db, self.user)
+
+        second_order, _ = self._make_order(order_no="POS-TEST-9", price=Decimal("100.00"))
+        post_order(second_order.id, self.db, self.user)
+        with self.assertRaises(HTTPException) as ctx:
+            add_pos_payment(second_order.id, payload, "pos-order-bound-key", self.db, self.user)
+
+        self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(self.db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == self.folio_id)), 1)
 
     def test_void_posted_order_reverses_finance_and_restores_stock(self):

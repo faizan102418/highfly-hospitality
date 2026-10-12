@@ -226,13 +226,29 @@ def add_payment(folio_id: int, payload: PaymentCreate, idempotency_key: str | No
     if reservation is None: raise HTTPException(status_code=404, detail="Folio not found")
     property_ = resolve_authorized_property(db, user.id, reservation.property_id)
     if folio.status != "open": raise HTTPException(status_code=409, detail="Folio is already closed")
-    if idempotency_key:
-        persisted_key = scoped_idempotency_key(property_.id, idempotency_key.strip())
+    if idempotency_key is not None:
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail="Idempotency-Key must not be empty")
+        if len(normalized_key) > 100:
+            raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
+        persisted_key = scoped_idempotency_key(property_.id, normalized_key)
         existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == persisted_key))
+        if existing is None:
+            # Safely replay pre-property-scoping keys only within this property.
+            existing = db.scalar(select(FinancialTransaction).where(
+                FinancialTransaction.idempotency_key == normalized_key,
+                FinancialTransaction.property_id == property_.id,
+            ))
         if existing:
-            if existing.transaction_type != "folio_payment" or existing.folio_id != folio_id: raise HTTPException(status_code=409, detail="Idempotency key is already bound to a different financial transaction")
-            payment = db.get(Payment, int(existing.reference_id)) if existing.reference_id else None
-            if not payment: raise HTTPException(status_code=409, detail="Financial idempotency record has no payment")
+            if existing.transaction_type != "folio_payment" or existing.folio_id != folio_id:
+                raise HTTPException(status_code=409, detail="Idempotency key is already bound to a different financial transaction")
+            payment_id = int(existing.reference_id) if existing.reference_id and existing.reference_id.isdigit() else None
+            payment = db.get(Payment, payment_id) if payment_id is not None else None
+            if payment is None or payment.folio_id != folio_id:
+                raise HTTPException(status_code=409, detail="Financial idempotency record has no compatible payment")
+            if payment.amount != payload.amount or payment.method != payload.method or payment.reference != payload.reference:
+                raise HTTPException(status_code=409, detail="Idempotency key is already bound to different payment parameters")
             return payment
     summary = build_folio_response(db, folio)
     if payload.amount > summary.balance: raise HTTPException(status_code=400, detail=f"Payment exceeds outstanding balance of {summary.balance}")
