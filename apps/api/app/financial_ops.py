@@ -14,7 +14,7 @@ from .business_date import get_current_business_date
 from .db import get_db
 from .financial_authority import folio_ledger_summary
 from .financial_models import FolioItemWindow, Invoice, InvoiceSequence, PaymentRefund
-from .ledger import post_deposit_received, post_transaction
+from .ledger import post_deposit_received, post_transaction, scoped_idempotency_key
 from .models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Room, User
 from .pms_core import FolioWindow, Stay
 from .tenancy import Property, resolve_authorized_property
@@ -128,7 +128,7 @@ def refund_payment(folio_id: int, payload: RefundCreate, idempotency_key: str | 
     if not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for refunds")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if not folio or not payment or payment.folio_id != folio_id: raise HTTPException(status_code=404, detail="Folio or payment not found")
-    existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
+    existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(property_.id, key)))
     if existing_tx is not None:
         if existing_tx.transaction_type != "payment_refund" or existing_tx.folio_id != folio_id: raise HTTPException(status_code=409, detail="Idempotency key is already bound to another financial operation")
         refund_id = int(existing_tx.reference_id) if existing_tx.reference_id and existing_tx.reference_id.isdigit() else None
@@ -337,13 +337,16 @@ def close_business_date(db: Session = Depends(get_db), user: User = Depends(requ
 def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     stay = db.get(Stay, stay_id)
     if not stay: raise HTTPException(status_code=404, detail="Stay not found")
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None: raise HTTPException(status_code=404, detail="Stay not found")
+    property_ = resolve_authorized_property(db, user.id, reservation.property_id)
     transaction_type = payload.get("transaction_type"); amount = money(payload.get("amount", 0))
     if transaction_type not in {"received", "applied", "refunded", "adjusted"} or amount <= 0: raise HTTPException(status_code=400, detail="Invalid deposit transaction")
     key = (idempotency_key or "").strip()
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if transaction_type in {"applied", "refunded"} and not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for deposit application/refund")
     if key:
-        existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
+        existing_tx = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(property_.id, key)))
         if existing_tx is not None:
             if existing_tx.transaction_type != f"deposit_{transaction_type}" or existing_tx.reservation_id != stay.reservation_id: raise HTTPException(status_code=409, detail="Idempotency key is already bound to another financial operation")
             deposit_id = int(existing_tx.reference_id) if existing_tx.reference_id and existing_tx.reference_id.isdigit() else None; existing_deposit = db.get(DepositTransaction, deposit_id) if deposit_id else None

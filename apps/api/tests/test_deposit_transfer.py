@@ -13,7 +13,7 @@ import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 import app.financial_authority  # noqa: F401
 from app.deposit_transfer import DepositTransferCreate, stay_deposit_balance, transfer_deposit
-from app.ledger import post_deposit_received
+from app.ledger import post_deposit_received, scoped_idempotency_key
 from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, Reservation, Role, User
 from app.tenancy import PropertyUserAccess
 from app.pms_core import Stay
@@ -105,7 +105,7 @@ class DepositTransferTests(unittest.TestCase):
         self.assertTrue(replay["replayed"])
         self.assertEqual(replay["transaction_id"], first_tx)
         self.assertEqual(self.db.scalar(select(func.count(DepositTransaction.id)).where(DepositTransaction.reference == "deposit-transfer-replay")), 2)
-        self.assertEqual(self.db.scalar(select(func.count(FinancialTransaction.id)).where(FinancialTransaction.idempotency_key == "deposit-transfer-replay")), 1)
+        self.assertEqual(self.db.scalar(select(func.count(FinancialTransaction.id)).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(self.property.id, "deposit-transfer-replay"))), 1)
         self.assertEqual(stay_deposit_balance(self.db, 1), Decimal("55.00"))
         self.assertEqual(stay_deposit_balance(self.db, 2), Decimal("25.00"))
 

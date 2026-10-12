@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .business_date import get_current_business_date
 from .db import get_db
-from .ledger import post_transaction, reverse_transaction
+from .ledger import post_transaction, reverse_transaction, scoped_idempotency_key
 from .models import (
     AuditLog,
     Folio,
@@ -503,7 +503,7 @@ def add_pos_payment(
     )
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Order folio is unavailable")
-    existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == key))
+    existing = db.scalar(select(FinancialTransaction).where(FinancialTransaction.idempotency_key == scoped_idempotency_key(property_.id, key)))
     if existing is not None:
         if existing.transaction_type != "folio_payment" or existing.folio_id != folio.id:
             raise HTTPException(status_code=409, detail="Idempotency key is already bound to another financial operation")
