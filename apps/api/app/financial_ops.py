@@ -134,7 +134,7 @@ def refund_payment(folio_id: int, payload: RefundCreate, idempotency_key: str | 
         refund_id = int(existing_tx.reference_id) if existing_tx.reference_id and existing_tx.reference_id.isdigit() else None
         refund = db.get(PaymentRefund, refund_id) if refund_id else None
         if refund is None or refund.payment_id != payment.id: raise HTTPException(status_code=409, detail="Idempotent refund record is missing or incompatible")
-        if refund.amount != money(payload.amount) or (refund.method or payment.method) != (payload.method or payment.method) or refund.reason != payload.reason: raise HTTPException(status_code=409, detail="Idempotency key is already bound to different refund parameters")
+        if refund.amount != money(payload.amount) or (refund.method or payment.method) != (payload.method or payment.method) or refund.reason != payload.reason or refund.reference != payload.reference: raise HTTPException(status_code=409, detail="Idempotency key is already bound to different refund parameters")
         return _refund_response(db, folio, refund, True)
     already_refunded = payment_refunded_amount(db, payment.id); refundable = money(Decimal(payment.amount) - already_refunded); amount = money(payload.amount)
     if amount > refundable: raise HTTPException(status_code=409, detail=f"Refund exceeds refundable payment balance of {refundable}")
