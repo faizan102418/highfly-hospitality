@@ -165,7 +165,19 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertTrue(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.transaction_type == "deposit_applied")))
 
     def test_occupant_change_rejects_foreign_property_guest_without_side_effects(self):
-        other_property = ensure_test_property(self.db)
+        other_organization = Organization(name=f"Occupant Isolation Org {id(self)}", slug=f"occupant-isolation-org-{id(self)}")
+        self.db.add(other_organization)
+        self.db.flush()
+        other_property = Property(
+            organization_id=other_organization.id,
+            name=f"Occupant Isolation Property {id(self)}",
+            code=f"OCC-{id(self)}",
+            slug=f"occupant-isolation-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
         foreign_guest = Guest(property_id=other_property.id, full_name=f"Foreign occupant {id(self)}")
         self.db.add(foreign_guest)
         self.db.flush()
