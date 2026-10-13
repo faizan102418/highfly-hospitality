@@ -11,7 +11,7 @@ from app.db import Base
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.main import app
-from app.models import DepositTransaction, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomMove, RoomType, StayOccupant, StayRateSegment, User
+from app.models import BusinessDateState, DepositTransaction, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomMove, RoomType, StayOccupant, StayRateSegment, User
 from app.phase_a_workflows import (
     DepositApply,
     DepositRequest,
@@ -41,6 +41,8 @@ class PhaseAWorkflowTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
         self.property = ensure_test_property(self.db)
+        self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 9)))
+        self.db.flush()
         role = Role(name="reception")
         self.db.add(role); self.db.flush()
         self.user = User(username="reception", password_hash="test", role_id=role.id)

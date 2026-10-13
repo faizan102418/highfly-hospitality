@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .auth import require_roles
 from .db import get_db
 from .tenancy import resolve_authorized_property
+from .ledger import post_transaction
 from .models import (
     AuditLog,
     DepositTransaction,
@@ -25,6 +26,7 @@ from .models import (
     StayOccupant,
     StayRateSegment,
     User,
+    Payment,
 )
 from .pms_core import Stay
 
@@ -104,7 +106,7 @@ def deposit_balance(db: Session, stay_id: int) -> Decimal:
     for row in rows:
         if row.transaction_type in {"received", "transfer_in"}:
             balance += Decimal(row.amount)
-        elif row.transaction_type in {"refund", "transfer_out", "applied"}:
+        elif row.transaction_type in {"refund", "refunded", "transfer_out", "applied"}:
             balance -= Decimal(row.amount)
     return balance.quantize(MONEY)
 
@@ -202,6 +204,22 @@ def receive_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends
     )
     db.add(transaction)
     db.flush()
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=409, detail="Stay reservation not found")
+    post_transaction(
+        db,
+        transaction_type="deposit_received",
+        description=f"Deposit received #{transaction.id}",
+        reference_type="deposit",
+        reference_id=str(transaction.id),
+        reservation_id=reservation.id,
+        created_by=user.id,
+        lines=[
+            {"account": {"cash": "Cash", "card": "Card Clearing", "bank_transfer": "Bank", "other": "Other Payment"}.get(payload.payment_method or "cash", "Other Payment"), "direction": "debit", "amount": transaction.amount, "stay_id": stay.id, "payment_method": payload.payment_method or "cash", "reference": payload.reference},
+            {"account": "Guest Deposits", "direction": "credit", "amount": transaction.amount, "stay_id": stay.id, "payment_method": payload.payment_method or "cash", "reference": payload.reference},
+        ],
+    )
     audit(db, user.id, "deposit_receive", "deposit_transaction", transaction.id, {"stay_id": stay.id, "amount": str(transaction.amount)})
     db.commit()
     return {"id": transaction.id, "stay_id": stay.id, "balance": deposit_balance(db, stay.id)}
@@ -216,7 +234,7 @@ def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(
         raise HTTPException(status_code=409, detail=f"Deposit refund exceeds available balance of {balance}")
     transaction = DepositTransaction(
         stay_id=stay.id,
-        transaction_type="refund",
+        transaction_type="refunded",
         amount=amount,
         payment_method=payload.payment_method,
         reference=payload.reference,
@@ -225,6 +243,22 @@ def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(
     )
     db.add(transaction)
     db.flush()
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=409, detail="Stay reservation not found")
+    post_transaction(
+        db,
+        transaction_type="deposit_refund",
+        description=f"Deposit refund #{transaction.id}",
+        reference_type="deposit",
+        reference_id=str(transaction.id),
+        reservation_id=reservation.id,
+        created_by=user.id,
+        lines=[
+            {"account": "Guest Deposits", "direction": "debit", "amount": amount, "stay_id": stay.id, "payment_method": payload.payment_method or "cash", "reference": payload.reference},
+            {"account": {"cash": "Cash", "card": "Card Clearing", "bank_transfer": "Bank", "other": "Other Payment"}.get(payload.payment_method or "cash", "Other Payment"), "direction": "credit", "amount": amount, "stay_id": stay.id, "payment_method": payload.payment_method or "cash", "reference": payload.reference},
+        ],
+    )
     audit(db, user.id, "deposit_refund", "deposit_transaction", transaction.id, {"stay_id": stay.id, "amount": str(amount)})
     db.commit()
     return {"id": transaction.id, "stay_id": stay.id, "balance": deposit_balance(db, stay.id)}
@@ -263,12 +297,35 @@ def apply_deposit(stay_id: int, payload: DepositApply, db: Session = Depends(get
     amount = payload.amount.quantize(MONEY)
     if amount > deposit_balance(db, stay.id):
         raise HTTPException(status_code=409, detail="Deposit application exceeds available balance")
-    transaction = DepositTransaction(stay_id=stay.id, folio_id=folio_id, transaction_type="applied", amount=amount, notes=payload.notes, created_by=user.id)
+    folio = db.get(Folio, folio_id)
+    if folio is None or folio.reservation_id != stay.reservation_id or folio.status != "open":
+        raise HTTPException(status_code=409, detail="An open folio for this stay's reservation is required")
+    transaction = DepositTransaction(stay_id=stay.id, folio_id=folio_id, transaction_type="applied", amount=amount, payment_method="deposit", notes=payload.notes, created_by=user.id)
     db.add(transaction)
     db.flush()
+    payment = Payment(folio_id=folio_id, amount=amount, method="deposit", reference=f"DEPOSIT-{transaction.id}")
+    db.add(payment)
+    db.flush()
+    reservation = db.get(Reservation, stay.reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=409, detail="Stay reservation not found")
+    post_transaction(
+        db,
+        transaction_type="deposit_applied",
+        description=f"Deposit application #{transaction.id}",
+        reference_type="deposit",
+        reference_id=str(transaction.id),
+        folio_id=folio_id,
+        reservation_id=reservation.id,
+        created_by=user.id,
+        lines=[
+            {"account": "Guest Deposits", "direction": "debit", "amount": amount, "folio_id": folio_id, "stay_id": stay.id, "payment_method": "deposit", "reference": payment.reference},
+            {"account": "Guest Receivables", "direction": "credit", "amount": amount, "folio_id": folio_id, "stay_id": stay.id, "payment_method": "deposit", "reference": payment.reference},
+        ],
+    )
     audit(db, user.id, "deposit_apply", "deposit_transaction", transaction.id, {"stay_id": stay.id, "folio_id": folio_id, "amount": str(amount)})
     db.commit()
-    return {"id": transaction.id, "stay_id": stay.id, "folio_id": folio_id, "applied": amount, "balance": deposit_balance(db, stay.id)}
+    return {"id": transaction.id, "stay_id": stay.id, "folio_id": folio_id, "payment_id": payment.id, "applied": amount, "balance": deposit_balance(db, stay.id)}
 
 
 @router.post("/stays/{stay_id}/move-room", status_code=201)
