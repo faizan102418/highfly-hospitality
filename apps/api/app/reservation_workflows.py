@@ -133,8 +133,12 @@ def create_reservation_workflow(payload: ReservationWorkflowCreate, db: Session 
         raise HTTPException(status_code=400, detail="Booking guest does not exist")
     if booking_guest.property_id != property_.id:
         raise HTTPException(status_code=409, detail="Booking guest belongs to a different property")
-    if payload.group_id and not db.get(BookingGroup, payload.group_id):
-        raise HTTPException(status_code=400, detail="Booking group does not exist")
+    if payload.group_id:
+        group = db.get(BookingGroup, payload.group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail="Booking group does not exist")
+        if group.property_id != property_.id:
+            raise HTTPException(status_code=409, detail="Booking group belongs to a different property")
     room_ids = [item.room_id for item in payload.rooms]
     if len(room_ids) != len(set(room_ids)):
         raise HTTPException(status_code=400, detail="Duplicate rooms are not allowed")
