@@ -13,6 +13,7 @@ from .auth import get_current_user, require_roles
 from .configuration_schema import (
     ORGANIZATION_KEYS,
     ORG_TO_PROPERTY,
+    PROPERTY_KEYS,
     resolve_effective_settings,
     validate_setting,
 )
