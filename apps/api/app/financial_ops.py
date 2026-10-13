@@ -341,6 +341,10 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
     transaction_type = payload.get("transaction_type"); amount = money(payload.get("amount", 0))
     if transaction_type not in {"received", "applied", "refunded", "adjusted"} or amount <= 0: raise HTTPException(status_code=400, detail="Invalid deposit transaction")
     key = (idempotency_key or "").strip()
+    if transaction_type == "applied":
+        folio_for_application = db.scalar(select(Folio).where(Folio.reservation_id == stay.reservation_id))
+        if folio_for_application is None or folio_for_application.status != "open":
+            raise HTTPException(status_code=409, detail="Deposit application requires an open folio for the stay's reservation")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if transaction_type in {"applied", "refunded"} and not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for deposit application/refund")
     if key:
@@ -350,8 +354,18 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
             if existing_tx.transaction_type != expected_financial_type or existing_tx.reservation_id != stay.reservation_id: raise HTTPException(status_code=409, detail="Idempotency key is already bound to another financial operation")
             deposit_id = int(existing_tx.reference_id) if existing_tx.reference_id and existing_tx.reference_id.isdigit() else None; existing_deposit = db.get(DepositTransaction, deposit_id) if deposit_id else None
             if existing_deposit is None or existing_deposit.stay_id != stay.id: raise HTTPException(status_code=409, detail="Idempotent deposit transaction is missing or incompatible")
-            if money(existing_deposit.amount) != amount or existing_deposit.transaction_type != transaction_type: raise HTTPException(status_code=409, detail="Idempotency key is already bound to different deposit parameters")
-            return {"id": existing_deposit.id, "stay_id": stay.id, "transaction_type": existing_deposit.transaction_type, "amount": existing_deposit.amount, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
+            expected_method = "deposit" if transaction_type == "applied" else payload.get("payment_method")
+            if (
+                money(existing_deposit.amount) != amount
+                or existing_deposit.transaction_type != transaction_type
+                or existing_deposit.payment_method != expected_method
+                or existing_deposit.notes != payload.get("notes")
+                or (transaction_type == "applied" and existing_deposit.folio_id != folio.id if "folio" in locals() else False)
+            ): raise HTTPException(status_code=409, detail="Idempotency key is already bound to different deposit parameters")
+            existing_payment = db.scalar(select(Payment).where(Payment.folio_id == existing_deposit.folio_id, Payment.reference == existing_deposit.reference, Payment.method == "deposit")) if transaction_type == "applied" else None
+            if transaction_type == "applied" and existing_payment is None:
+                raise HTTPException(status_code=409, detail="Idempotent deposit application is missing its folio payment record")
+            return {"id": existing_deposit.id, "stay_id": stay.id, "transaction_type": existing_deposit.transaction_type, "amount": existing_deposit.amount, "payment_id": existing_payment.id if existing_payment else None, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
     folio = db.scalar(select(Folio).where(Folio.reservation_id == stay.reservation_id)); reservation = db.get(Reservation, stay.reservation_id); current = stay_deposit_ledger_balance(db, stay.id); signed = amount if transaction_type in {"received", "adjusted"} else -amount; new_balance = money(current + signed)
     if new_balance < 0: raise HTTPException(status_code=409, detail="Deposit transaction exceeds available deposit balance")
     required_deposit = money(stay.agreed_rate * max(0, (stay.check_out - stay.check_in).days))
@@ -359,7 +373,12 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
         raise HTTPException(status_code=409, detail=f"Deposit received exceeds the stay's current required deposit of {required_deposit}")
     if transaction_type == "received" and stay.deposit_required != required_deposit:
         stay.deposit_required = required_deposit
-    deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id if folio else None, transaction_type=transaction_type, amount=amount, payment_method=payload.get("payment_method"), reference=key or payload.get("reference"), notes=payload.get("notes"), created_by=user.id); db.add(deposit); db.flush()
+    deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id if folio else None, transaction_type=transaction_type, amount=amount, payment_method="deposit" if transaction_type == "applied" else payload.get("payment_method"), reference=key or payload.get("reference"), notes=payload.get("notes"), created_by=user.id); db.add(deposit); db.flush()
+    payment = None
+    if transaction_type == "applied":
+        payment = Payment(folio_id=folio.id, amount=amount, method="deposit", reference=deposit.reference)
+        db.add(payment)
+        db.flush()
     method = payload.get("payment_method") or "other"; cash_account = {"cash": "Cash", "card": "Card Clearing", "bank_transfer": "Bank", "other": "Other Payment"}.get(method, "Other Payment"); financial_key = key or f"deposit:{deposit.id}"
     try:
         if transaction_type == "received": tx = post_deposit_received(db, stay_id=stay.id, folio_id=folio.id if folio else None, reservation_id=stay.reservation_id, deposit_id=deposit.id, amount=amount, method=payload.get("payment_method"), created_by=user.id, idempotency_key=financial_key)
@@ -372,8 +391,19 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
         db.rollback()
         raise
     if tx.reference_id != str(deposit.id):
-        db.delete(deposit); db.flush(); replay_deposit_id = int(tx.reference_id) if tx.reference_id and tx.reference_id.isdigit() else None; replay_deposit = db.get(DepositTransaction, replay_deposit_id) if replay_deposit_id else None
-        if replay_deposit is None or replay_deposit.stay_id != stay.id: db.rollback(); raise HTTPException(status_code=409, detail="Idempotent deposit transaction is missing or incompatible")
-        return {"id": replay_deposit.id, "stay_id": stay.id, "transaction_type": replay_deposit.transaction_type, "amount": replay_deposit.amount, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
+        if payment is not None:
+            db.delete(payment)
+        db.delete(deposit)
+        db.flush()
+        replay_deposit_id = int(tx.reference_id) if tx.reference_id and tx.reference_id.isdigit() else None
+        replay_deposit = db.get(DepositTransaction, replay_deposit_id) if replay_deposit_id else None
+        if replay_deposit is None or replay_deposit.stay_id != stay.id:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Idempotent deposit transaction is missing or incompatible")
+        replay_payment = db.scalar(select(Payment).where(Payment.folio_id == replay_deposit.folio_id, Payment.reference == replay_deposit.reference, Payment.method == "deposit")) if transaction_type == "applied" else None
+        if transaction_type == "applied" and replay_payment is None:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Idempotent deposit application is missing its folio payment record")
+        return {"id": replay_deposit.id, "stay_id": stay.id, "transaction_type": replay_deposit.transaction_type, "amount": replay_deposit.amount, "payment_id": replay_payment.id if replay_payment else None, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
     stay.deposit_received = stay_deposit_ledger_balance(db, stay.id); audit(db, user.id, "deposit", "stay", stay_id, {"deposit_transaction_id": deposit.id, "transaction_type": transaction_type, "amount": str(amount), "new_balance": str(stay.deposit_received)}); db.commit(); db.refresh(deposit)
-    return {"id": deposit.id, "stay_id": stay.id, "transaction_type": deposit.transaction_type, "amount": deposit.amount, "balance": stay.deposit_received, "replayed": False}
+    return {"id": deposit.id, "stay_id": stay.id, "transaction_type": deposit.transaction_type, "amount": deposit.amount, "payment_id": payment.id if payment else None, "balance": stay.deposit_received, "replayed": False}
