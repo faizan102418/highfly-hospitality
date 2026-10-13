@@ -28,11 +28,13 @@ Minimum route families:
 
 Regression tests must use at least two properties and prove that a user assigned only to Property A cannot read or mutate Property B records. Test denied operations for no partial ledger writes, no partial deposit records, no unintended audit rows, and stable idempotency behavior.
 
-### Known review gate
+### Current review gate — issue #11 reopened
 
-Issue [#11](https://github.com/faizan102418/highfly-hospitality/issues/11) tracks a source-level concern in the legacy `phase_a_workflows.py` and `phase_a_completion.py` paths: their stay lookup helpers fetch by ID without performing property authorization inside the helper. Every caller must be traced and corrected or shown to authorize before any sensitive read/write. This is a review finding, not a confirmed exploit; the gate remains open until fixes and regression tests pass.
+Issue [#11](https://github.com/faizan102418/highfly-hospitality/issues/11) was reopened after reviewing the merged code and CI evidence. PR #30 merged to `main` at `68db72a2c93481745bea884050969bca83d1b316`; API and web jobs in CI run #449 passed, including the full unittest suite, PostgreSQL smoke tests, SQLite migration compatibility, and an isolated PostgreSQL backup/restore round trip. Windows deployment scripts workflow #449 also passed.
 
-**Do not start another operational module until this gate is closed and CI passes.**
+The remaining concern is financial consistency across overlapping legacy and completion deposit handlers. The legacy handlers in `phase_a_workflows.py` create deposit records/audit events but do not post the corresponding ledger transaction for receive/refund/apply, and legacy apply does not create a folio `Payment`; the completion handlers do. Route registration appears to put the completion router first, but this must be confirmed with route-introspection tests, and the legacy implementations must be made safe or removed/delegated so future route-order changes cannot expose inconsistent behavior. See [issue #11](https://github.com/faizan102418/highfly-hospitality/issues/11).
+
+Do not call the security gate complete until route registration, balanced ledger/payment invariants, rollback/audit/idempotency behavior, and cross-property denial tests are verified on CI. This concern is not a confirmed production exploit. No production database operations were performed.
 
 ## 3. Backup and recovery
 
