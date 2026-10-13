@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
+from app.ledger import post_deposit_received
 from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
     DepositApplyCreate,
@@ -71,13 +72,25 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.add(StayOccupant(stay_id=stay.id, guest_id=guests[1].id, role="primary", is_primary=True, check_in=stay.check_in, check_out=stay.check_out))
         window = StayFolioWindow(folio_id=folio.id, stay_id=stay.id, name="Room charges", payer_type="guest", guest_id=guests[1].id, status="open")
         self.db.add(window)
-        self.db.add(DepositTransaction(stay_id=stay.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id))
-        business_date_state = self.db.get(BusinessDateState, 1)
+        seed_deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id)
+        self.db.add(seed_deposit)
+        self.db.flush()
+        business_date_state = self.db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == self.property.id))
         if business_date_state is None:
             self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
         else:
             business_date_state.current_business_date = date(2026, 9, 8)
             business_date_state.last_closed_at = None
+        post_deposit_received(
+            self.db,
+            stay_id=stay.id,
+            folio_id=folio.id,
+            reservation_id=reservation.id,
+            deposit_id=seed_deposit.id,
+            amount=Decimal("200.00"),
+            method="cash",
+            created_by=self.user.id,
+        )
         self.db.commit()
         self.db.expire_all()
         self.reservation = self.db.get(Reservation, reservation.id)
@@ -119,19 +132,73 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.expire_all()
         other_stay = self.db.get(Stay, other_stay.id)
 
-        transferred = transfer_deposit(self.stay.id, DepositTransferCreate(target_stay_id=other_stay.id, amount=Decimal("50.00"), reason="Room split"), self.db, self.user)
+        transferred = transfer_deposit(
+            self.stay.id,
+            DepositTransferCreate(target_stay_id=other_stay.id, amount=Decimal("50.00"), reason="Room split"),
+            idempotency_key="phase-a-transfer-001",
+            db=self.db,
+            user=self.user,
+        )
         self.assertEqual(transferred["source_balance"], Decimal("150.00"))
-        self.assertEqual(transferred["target_balance"], Decimal("50.00"))
-        refunded = refund_deposit(self.stay.id, DepositRefundCreate(amount=Decimal("25.00"), payment_method="cash", reason="Guest request"), self.db, self.user)
+        self.assertEqual(transferred["destination_balance"], Decimal("50.00"))
+        refunded = refund_deposit(
+            self.stay.id,
+            DepositRefundCreate(amount=Decimal("25.00"), payment_method="cash", reason="Guest request"),
+            idempotency_key="phase-a-refund-001",
+            db=self.db,
+            user=self.user,
+        )
         self.assertEqual(refunded["balance"], Decimal("125.00"))
         self.assertTrue(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.transaction_type == "deposit_refund")))
-        apply_result = apply_deposit(self.stay.id, DepositApplyCreate(folio_id=self.folio.id, amount=Decimal("100.00"), reason="Apply on arrival"), self.db, self.user)
-        self.assertEqual(apply_result["remaining_deposit"], Decimal("25.00"))
+        apply_result = apply_deposit(
+            self.stay.id,
+            DepositApplyCreate(folio_id=self.folio.id, amount=Decimal("100.00"), reason="Apply on arrival"),
+            idempotency_key="phase-a-apply-001",
+            db=self.db,
+            user=self.user,
+        )
+        self.assertEqual(apply_result["balance"], Decimal("25.00"))
         payment = self.db.scalar(select(Payment).where(Payment.folio_id == self.folio.id))
         self.assertIsNotNone(payment)
         self.assertEqual(payment.amount, Decimal("100.00"))
         self.assertEqual(payment.method, "deposit")
         self.assertTrue(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.transaction_type == "deposit_applied")))
+
+    def test_occupant_change_rejects_foreign_property_guest_without_side_effects(self):
+        other_organization = Organization(name=f"Occupant Isolation Org {id(self)}", slug=f"occupant-isolation-org-{id(self)}")
+        self.db.add(other_organization)
+        self.db.flush()
+        other_property = Property(
+            organization_id=other_organization.id,
+            name=f"Occupant Isolation Property {id(self)}",
+            code=f"OCC-{id(self)}",
+            slug=f"occupant-isolation-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
+        foreign_guest = Guest(property_id=other_property.id, full_name=f"Foreign occupant {id(self)}")
+        self.db.add(foreign_guest)
+        self.db.flush()
+        occupant = self.db.scalar(
+            select(StayOccupant).where(StayOccupant.stay_id == self.stay.id, StayOccupant.is_primary.is_(True))
+        )
+        original_guest_id = occupant.guest_id
+        before_audits = self.db.query(AuditLog).count()
+
+        with self.assertRaises(HTTPException) as raised:
+            change_stay_occupant_guest(
+                self.stay.id,
+                occupant.id,
+                OccupantGuestChange(guest_id=foreign_guest.id, reason="Cross-property attempt"),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(self.db.get(StayOccupant, occupant.id).guest_id, original_guest_id)
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
 
     def test_folio_item_routing_and_window_lifecycle(self):
         item = FolioItem(folio_id=self.folio.id, stay_id=self.stay.id, description="Room minibar", category="minibar", quantity=Decimal("1"), unit_price=Decimal("40.00"), discount=Decimal("0.00"))

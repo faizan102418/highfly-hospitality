@@ -167,6 +167,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
             self.db,
             self.user,
         )
+        self.folio.status = "closed"
         replay = create_deposit_with_ledger(
             self.stay.id,
             {"transaction_type": "applied", "amount": Decimal("40.00"), "reference": "APP-1"},
@@ -179,6 +180,18 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         self.assertEqual(replay["balance"], Decimal("60.00"))
         self.assertFalse(applied["replayed"])
         self.assertTrue(replay["replayed"])
+        self.assertIsNotNone(applied["payment_id"])
+        self.assertEqual(applied["payment_id"], replay["payment_id"])
+        self.assertEqual(
+            self.db.scalar(
+                select(func.count()).select_from(Payment).where(
+                    Payment.folio_id == self.folio.id,
+                    Payment.reference == "APP-1",
+                    Payment.method == "deposit",
+                )
+            ),
+            1,
+        )
         self.assertEqual(
             self.db.scalar(
                 select(func.count()).select_from(FinancialTransaction).where(FinancialTransaction.transaction_type == "deposit_applied")
@@ -187,7 +200,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         )
         self.assertEqual(
             self.db.scalar(
-                select(func.count()).select_from(DepositTransaction).where(DepositTransaction.reference == "deposit-apply-001")
+                select(func.count()).select_from(DepositTransaction).where(DepositTransaction.reference == "APP-1")
             ),
             1,
         )
@@ -274,6 +287,39 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         self.assertEqual(self.db.scalar(select(func.count()).select_from(FinancialTransaction)), before["financial"])
         self.assertEqual(self.db.scalar(select(func.count()).select_from(LedgerEntry)), before["ledger"])
         self.assertEqual(self.db.scalar(select(func.count()).select_from(AuditLog)), before["audit"])
+
+    def test_deposit_application_ledger_failure_rolls_back_payment_and_operational_records(self):
+        create_deposit_with_ledger(
+            self.stay.id,
+            {"transaction_type": "received", "amount": Decimal("100.00"), "payment_method": "cash"},
+            "deposit-apply-rollback-seed",
+            self.db,
+            self.user,
+        )
+        before = {
+            "deposits": self.db.scalar(select(func.count()).select_from(DepositTransaction)),
+            "payments": self.db.scalar(select(func.count()).select_from(Payment)),
+            "financial": self.db.scalar(select(func.count()).select_from(FinancialTransaction)),
+            "ledger": self.db.scalar(select(func.count()).select_from(LedgerEntry)),
+            "audit": self.db.scalar(select(func.count()).select_from(AuditLog)),
+        }
+        with patch("app.financial_ops.post_transaction", side_effect=RuntimeError("simulated ledger outage")):
+            with self.assertRaisesRegex(RuntimeError, "simulated ledger outage"):
+                create_deposit_with_ledger(
+                    self.stay.id,
+                    {"transaction_type": "applied", "amount": Decimal("20.00"), "reference": "APPLY-ROLLBACK"},
+                    "deposit-apply-rollback-001",
+                    self.db,
+                    self.user,
+                )
+        after = {
+            "deposits": self.db.scalar(select(func.count()).select_from(DepositTransaction)),
+            "payments": self.db.scalar(select(func.count()).select_from(Payment)),
+            "financial": self.db.scalar(select(func.count()).select_from(FinancialTransaction)),
+            "ledger": self.db.scalar(select(func.count()).select_from(LedgerEntry)),
+            "audit": self.db.scalar(select(func.count()).select_from(AuditLog)),
+        }
+        self.assertEqual(after, before)
 
     def test_cross_property_deposit_request_is_denied_without_writes(self):
         organization = Organization(name="Isolated Organization", slug="isolated-org")

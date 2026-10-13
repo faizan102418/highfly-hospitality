@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from secrets import token_hex
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import ForeignKey, Text, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -205,78 +205,85 @@ def share_stay_with_occupant(stay_id: int, payload: OccupantGuestChange, db: Ses
 
 
 @router.post("/stays/{stay_id}/deposits/transfer", status_code=201)
-def transfer_deposit(stay_id: int, payload: DepositTransferCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    source = stay_or_404(db, stay_id, user.id)
-    target = stay_or_404(db, payload.target_stay_id, user.id)
-    source_reservation = db.get(Reservation, source.reservation_id)
-    target_reservation = db.get(Reservation, target.reservation_id)
-    if source_reservation is None or target_reservation is None or source_reservation.property_id != target_reservation.property_id:
-        raise HTTPException(status_code=409, detail="Deposit transfer stays must belong to the same property")
-    if source.id == target.id:
-        raise HTTPException(status_code=400, detail="Source and target stay must be different")
-    available = deposit_balance(db, source.id)
-    amount = money(payload.amount)
-    if amount > available:
-        raise HTTPException(status_code=409, detail=f"Transfer exceeds deposit balance of {available}")
-    reference = deposit_reference()
-    out_tx = DepositTransaction(stay_id=source.id, transaction_type="transfer_out", amount=amount, reference=reference, notes=payload.reason, created_by=user.id)
-    in_tx = DepositTransaction(stay_id=target.id, transaction_type="transfer_in", amount=amount, reference=reference, notes=f"Transfer from stay #{source.id}: {payload.reason or 'Deposit transfer'}", created_by=user.id)
-    db.add_all([out_tx, in_tx])
-    audit(db, user.id, "deposit_transfer", "stay", source.id, {"target_stay_id": target.id, "amount": str(amount), "reference": reference})
-    db.commit()
-    return {"reference": reference, "from_stay_id": source.id, "to_stay_id": target.id, "amount": amount, "source_balance": deposit_balance(db, source.id), "target_balance": deposit_balance(db, target.id)}
+def transfer_deposit(
+    stay_id: int,
+    payload: DepositTransferCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "reception")),
+):
+    # Preserve the legacy URL, but delegate to the single idempotent,
+    # property-scoped transfer implementation.
+    from .deposit_transfer import DepositTransferCreate as CanonicalTransferCreate
+    from .deposit_transfer import transfer_deposit as transfer_deposit_canonical
+
+    return transfer_deposit_canonical(
+        stay_id,
+        CanonicalTransferCreate(
+            destination_stay_id=payload.target_stay_id,
+            amount=payload.amount,
+            reason=payload.reason,
+        ),
+        idempotency_key,
+        db,
+        user,
+    )
 
 
 @router.post("/stays/{stay_id}/deposits/refund", status_code=201)
-def refund_deposit(stay_id: int, payload: DepositRefundCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id, user.id)
-    amount = money(payload.amount)
-    available = deposit_balance(db, stay.id)
-    if amount > available:
-        raise HTTPException(status_code=409, detail=f"Refund exceeds deposit balance of {available}")
-    tx = DepositTransaction(stay_id=stay.id, transaction_type="refunded", amount=amount, payment_method=payload.payment_method, reference=payload.reference or deposit_reference(), notes=payload.reason, created_by=user.id)
-    db.add(tx)
-    db.flush()
-    reservation = db.get(Reservation, stay.reservation_id)
-    if reservation:
-        post_transaction(db, transaction_type="deposit_refund", description=f"Deposit refund #{tx.id}", reference_type="deposit", reference_id=str(tx.id), folio_id=None, reservation_id=reservation.id, created_by=user.id, lines=[
-            {"account": "Guest Deposits", "direction": "debit", "amount": amount, "stay_id": stay.id, "payment_method": payload.payment_method, "reference": tx.reference},
-            {"account": {"cash": "Cash", "card": "Card Clearing", "bank_transfer": "Bank", "other": "Other Payment"}.get(payload.payment_method, "Other Payment"), "direction": "credit", "amount": amount, "stay_id": stay.id, "payment_method": payload.payment_method, "reference": tx.reference},
-        ])
-    audit(db, user.id, "deposit_refund", "deposit_transaction", tx.id, {"stay_id": stay.id, "amount": str(amount), "reference": tx.reference})
-    db.commit()
-    return {"id": tx.id, "stay_id": stay.id, "transaction_type": tx.transaction_type, "amount": tx.amount, "balance": deposit_balance(db, stay.id), "reference": tx.reference}
+def refund_deposit(
+    stay_id: int,
+    payload: DepositRefundCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "reception")),
+):
+    # Keep the compatibility route on the ledger-backed, idempotent path.
+    from .financial_ops import create_deposit_with_ledger
+
+    return create_deposit_with_ledger(
+        stay_id,
+        {
+            "transaction_type": "refunded",
+            "amount": payload.amount,
+            "payment_method": payload.payment_method,
+            "reference": payload.reference,
+            "notes": payload.reason,
+        },
+        idempotency_key,
+        db,
+        user,
+    )
 
 
 @router.post("/stays/{stay_id}/deposits/apply", status_code=201)
-def apply_deposit(stay_id: int, payload: DepositApplyCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+def apply_deposit(
+    stay_id: int,
+    payload: DepositApplyCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "reception")),
+):
+    # The canonical path also creates the folio Payment and verifies replay.
+    from .financial_ops import create_deposit_with_ledger
+
     stay = stay_or_404(db, stay_id, user.id)
     folio = db.get(Folio, payload.folio_id)
-    if not folio:
-        raise HTTPException(status_code=404, detail="Folio not found")
-    if folio.reservation_id != stay.reservation_id:
-        raise HTTPException(status_code=409, detail="Deposit can only be applied to the stay's reservation folio")
-    if folio.status != "open":
-        raise HTTPException(status_code=409, detail="Folio is closed")
-    amount = money(payload.amount)
-    available = deposit_balance(db, stay.id)
-    if amount > available:
-        raise HTTPException(status_code=409, detail=f"Application exceeds deposit balance of {available}")
-    tx = DepositTransaction(stay_id=stay.id, folio_id=folio.id, transaction_type="applied", amount=amount, payment_method="deposit", reference=deposit_reference(), notes=payload.reason, created_by=user.id)
-    db.add(tx)
-    db.flush()
-    payment = Payment(folio_id=folio.id, amount=amount, method="deposit", reference=tx.reference)
-    db.add(payment)
-    db.flush()
-    reservation = db.get(Reservation, stay.reservation_id)
-    if reservation:
-        post_transaction(db, transaction_type="deposit_applied", description=f"Deposit application #{tx.id}", reference_type="deposit", reference_id=str(tx.id), folio_id=folio.id, reservation_id=reservation.id, created_by=user.id, lines=[
-            {"account": "Guest Deposits", "direction": "debit", "amount": amount, "folio_id": folio.id, "stay_id": stay.id, "payment_method": "deposit", "reference": tx.reference},
-            {"account": "Guest Receivables", "direction": "credit", "amount": amount, "folio_id": folio.id, "stay_id": stay.id, "payment_method": "deposit", "reference": tx.reference},
-        ])
-    audit(db, user.id, "deposit_apply", "deposit_transaction", tx.id, {"stay_id": stay.id, "folio_id": folio.id, "amount": str(amount), "reference": tx.reference})
-    db.commit()
-    return {"deposit_transaction_id": tx.id, "payment_id": payment.id, "stay_id": stay.id, "folio_id": folio.id, "amount": amount, "remaining_deposit": deposit_balance(db, stay.id), "reference": tx.reference}
+    if folio is None or folio.reservation_id != stay.reservation_id:
+        raise HTTPException(status_code=404, detail="Folio not found for this stay")
+    return create_deposit_with_ledger(
+        stay_id,
+        {
+            "transaction_type": "applied",
+            "amount": payload.amount,
+            "reference": None,
+            "notes": payload.reason,
+            "folio_id": folio.id,
+        },
+        idempotency_key,
+        db,
+        user,
+    )
 
 
 @router.patch("/stays/{stay_id}/folio-windows/{window_id}")

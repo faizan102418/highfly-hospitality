@@ -138,6 +138,7 @@ def reconcile_and_reopen_folio(
     folio.status = "open"
     db.add(
         AuditLog(
+            property_id=reservation_property_id(db, folio),
             user_id=user.id,
             action="reconcile_and_reopen",
             entity_type="folio",
