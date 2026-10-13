@@ -13,6 +13,8 @@ type DepositTransaction = { id: number; stay_id: number; folio_id?: number | nul
 type DepositResponse = { balance: number; transactions: DepositTransaction[] };
 type RoomMove = { id: number; stay_id: number; from_room_id: number; to_room_id: number; effective_at: string; reason?: string | null; created_by?: number | null };
 
+type EffectiveSettings = { settings: { check_in_time: string; check_out_time: string }; property_id: number };
+
 type Props = {
   user: User;
   guests: Guest[];
@@ -109,6 +111,8 @@ function GuestSearch({ guests, value, onChange, api, placeholder = 'Search guest
 export default function ReservationsPMSView({ user, guests, rooms, roomTypes, reservations, onRefresh, api }: Props) {
   const canOperate = user.role === 'admin' || user.role === 'reception';
   const today = todayValue();
+  const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
+  useEffect(() => { let active = true; api<EffectiveSettings>('/api/settings/effective').then(value => { if (active) setEffectiveSettings(value); }).catch(() => { if (active) setEffectiveSettings(null); }); return () => { active = false; }; }, [api]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [reservationSearch, setReservationSearch] = useState('');
   const [reservationStatusFilter, setReservationStatusFilter] = useState('active');
@@ -338,7 +342,7 @@ export default function ReservationsPMSView({ user, guests, rooms, roomTypes, re
   const hiddenHistoryCount = reservations.filter(r => HIDDEN_RESERVATION_STATUSES.has(r.status)).length;
 
   return <section className="page">
-    <div className="page-heading"><div><p className="muted">PMS reservation control</p><h2>Reservations</h2></div><span className="room-count">{visibleReservationCount} active bookings</span></div>
+    <div className="page-heading"><div><p className="muted">PMS reservation control</p><h2>Reservations</h2>{effectiveSettings && <small className="muted">Property schedule: check-in {effectiveSettings.settings.check_in_time} · check-out {effectiveSettings.settings.check_out_time}. Bookings store dates; actual arrival/departure times are recorded when the lifecycle action occurs.</small>}</div><span className="room-count">{visibleReservationCount} active bookings</span></div>
     {message && <p className="notice">{message}</p>}
     <div className="workspace" style={{ gridTemplateColumns: 'minmax(0, 1.25fr) minmax(360px, 1fr)' }}>
       <div className="panel">
