@@ -8,7 +8,7 @@ from app.db import Base
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.financial_configuration import effective_financial_settings, effective_service_charge_rate
-from app.tenancy import OrganizationSetting, PropertySetting
+from app.tenancy import Organization, OrganizationSetting, Property, PropertySetting
 
 
 class FinancialConfigurationTests(unittest.TestCase):
@@ -61,7 +61,19 @@ class FinancialConfigurationTests(unittest.TestCase):
 
     def test_financial_settings_are_scoped_to_requested_property(self):
         first = self.property
-        second = ensure_test_property(self.db, name="Second Property")
+        second_org = Organization(name="Second Organization", slug="second-test-org")
+        self.db.add(second_org)
+        self.db.flush()
+        second = Property(
+            organization_id=second_org.id,
+            name="Second Property",
+            code="SECOND",
+            slug="second-test-property",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(second)
+        self.db.flush()
         self.db.add_all([
             OrganizationSetting(
                 organization_id=first.organization_id,
