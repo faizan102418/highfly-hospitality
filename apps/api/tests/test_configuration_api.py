@@ -12,6 +12,7 @@ from app.configuration import (
     _require_organization_access,
     _require_property_access,
     get_organization_settings,
+    get_effective_settings_for_current_property,
     get_property_branding,
     get_property_settings,
     update_organization_settings,
@@ -185,7 +186,7 @@ class ConfigurationValidationTests(unittest.TestCase):
             )
             update_property_settings(
                 property_a.id,
-                SettingsUpdate(settings={"language": "en", "currency": "USD"}),
+                SettingsUpdate(settings={"language": "en", "currency": "USD", "check_in_time": "16:00"}),
                 db,
                 user,
             )
@@ -198,6 +199,7 @@ class ConfigurationValidationTests(unittest.TestCase):
 
             settings_a = get_property_settings(property_a.id, db, user)
             settings_b = get_property_settings(property_b.id, db, user)
+            current_settings = get_effective_settings_for_current_property(db, user)
             branding_a = get_property_branding(property_a.id, db, user)
             branding_b = get_property_branding(property_b.id, db, user)
 
@@ -207,8 +209,11 @@ class ConfigurationValidationTests(unittest.TestCase):
             self.assertEqual(settings_b["sources"]["language"], "organization")
             self.assertEqual(settings_b["settings"]["currency"], "PKR")
             self.assertEqual(settings_b["sources"]["currency"], "platform")
-            self.assertEqual(settings_a["settings"]["check_in_time"], "15:00")
+            self.assertEqual(settings_a["settings"]["check_in_time"], "16:00")
             self.assertEqual(settings_b["settings"]["check_in_time"], "15:00")
+            self.assertEqual(current_settings["property_id"], property_a.id)
+            self.assertEqual(current_settings["settings"]["check_in_time"], "16:00")
+            self.assertEqual(current_settings["sources"]["check_in_time"], "property")
             self.assertEqual(branding_a.display_name, "Hotel A Custom")
             self.assertEqual(branding_a.primary_color, "#112233")
             self.assertEqual(branding_b.display_name, "Hotel B")
