@@ -15,6 +15,7 @@ from .deposit_transfer import router as deposit_transfer_router
 from .front_desk import post_accrued_room_charges, router as front_desk_router
 from .housekeeping import router as housekeeping_router
 from .financial_authority import folio_ledger_summary, has_posted_folio_item_transaction, post_folio_charge_authoritative
+from .financial_configuration import effective_service_charge_rate
 from .folio_integrity import item_has_active_charge
 from .ledger import post_folio_payment, router as ledger_router, scoped_idempotency_key
 from .models import AuditLog, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Room, StayRateSegment, User
@@ -31,7 +32,6 @@ from .folio_corrections import router as folio_corrections_router
 
 router = APIRouter(prefix="/api", tags=["billing"])
 MONEY = Decimal("0.01")
-FOOD_SERVICE_CHARGE_RATE = Decimal("0.10")
 FOOD_CATEGORIES = {"food", "restaurant", "room_service", "beverage", "drink", "snack"}
 router.include_router(housekeeping_router)
 router.include_router(reports_router)
@@ -63,7 +63,9 @@ def build_folio_response(db: Session, folio: Folio) -> FolioResponse:
     subtotal = money(sum((Decimal(i.quantity) * Decimal(i.unit_price) for i in items), Decimal("0.00")))
     discounts = money(sum((Decimal(i.discount) for i in items), Decimal("0.00")))
     food_net = money(sum((item_line_total(i) for i in items if is_food_item(i)), Decimal("0.00")))
-    food_service_charge = money(food_net * FOOD_SERVICE_CHARGE_RATE)
+    reservation = db.get(Reservation, folio.reservation_id)
+    service_charge_rate = effective_service_charge_rate(db, reservation.property_id) if reservation else Decimal('0')
+    food_service_charge = money(food_net * service_charge_rate)
     ledger = folio_ledger_summary(db, folio.id)
     active_stays = db.scalars(select(Stay).where(Stay.reservation_id == folio.reservation_id, Stay.status == "checked_in").order_by(Stay.id)).all()
     active_stay = active_stays[0] if len(active_stays) == 1 else None
