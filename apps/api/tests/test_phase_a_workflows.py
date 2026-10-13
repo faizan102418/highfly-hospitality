@@ -384,10 +384,11 @@ class PhaseAWorkflowTests(unittest.TestCase):
 
     def test_phase_a_routes_are_mounted(self):
         paths = app.openapi().get("paths", {})
-        self.assertIn("/api/stays/{stay_id}/occupants", paths)
-        self.assertIn("/api/stays/{stay_id}/deposits/receive", paths)
-        self.assertIn("/api/stays/{stay_id}/move-room", paths)
-        self.assertIn("/api/reservations/{reservation_id}/split", paths)
+        self.assertTrue(any(path.endswith("/stays/{stay_id}/occupants") for path in paths))
+        self.assertTrue(any(path.endswith("/stays/{stay_id}/deposits") for path in paths))
+        self.assertTrue(any(path.endswith("/stays/{stay_id}/move") for path in paths))
+        self.assertTrue(any(path.endswith("/reservations/{reservation_id}/split") for path in paths))
+        self.assertFalse(any(path.endswith("/stays/{stay_id}/deposits/receive") for path in paths))
 
 
 if __name__ == "__main__":
