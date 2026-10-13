@@ -61,7 +61,11 @@ The current model contains more than the core front-desk tables. The following i
 | `folios` | Property child of reservation | Reservation and folio ownership must be consistent; one folio per reservation is the current model. |
 | `folio_windows` | Property child of folio/stay | Validate the parent chain and any room/stay references. |
 | `folio_items` | Property child of folio (optional stay link) | If both folio and stay are set, they must resolve to the same property and compatible reservation. |
-| `folio_item_windows` | Property child/link of folio item and folio window | Both relationship paths must resolve to the same folio/property. |\n| `folio_item_routing` | Property child/link of folio item and window | Routing target must belong to the same folio/property; verify idempotency and uniqueness semantics. |\n| `payments` | Property child of folio | Payment and folio property must agree; protect idempotency and posting semantics. |\n| `payment_refunds` | Property child of payment/folio | Refund must reference the original payment and matching folio/property; enforce refundable balance and authorization. |\n| `invoices` | Property child of folio | Invoice and folio must share property; confirm numbering and lifecycle/immutability rules. |
+| `folio_item_windows` | Property child/link of folio item and folio window | Both relationship paths must resolve to the same folio/property. |
+| `folio_item_routing` | Property child/link of folio item and window | Routing target must belong to the same folio/property; verify idempotency and uniqueness semantics. |
+| `payments` | Property child of folio | Payment and folio property must agree; protect idempotency and posting semantics. |
+| `payment_refunds` | Property child of payment/folio | Refund must reference the original payment and matching folio/property; enforce refundable balance and authorization. |
+| `invoices` | Property child of folio | Invoice and folio must share property; confirm numbering and lifecycle/immutability rules. |
 | `deposit_transactions` | Property child of stay, optionally folio | Stay, folio, and actor must be consistent within the property. |
 | `financial_transactions` | Property-owned financial root | `property_id` is authoritative; referenced folio/reservation must match it. Preserve idempotency and reversal invariants. |
 | `ledger_entries` | Property child of financial transaction | Property is inherited through transaction; optional folio/stay references must match that property. Ledger rows should not be silently edited after posting. |
@@ -101,7 +105,13 @@ The current model contains more than the core front-desk tables. The following i
 
 The `room_inspections` and maintenance/task history entries are inventory checks, not a claim that those exact tables exist in the current schema.
 
-## 4. Naming and schema-source cautions\n\n- The purchasing Core tables are `purchase_order_lines`, `goods_receipts`, and `goods_receipt_lines`—not `purchase_order_items`, `purchase_receipts`, or `purchase_receipt_items`. Keep documentation and future constraints aligned with the actual declarations.\n- The current ORM model uses `folio_windows`, while revision `0005_stay_folio_windows` and legacy SQL refer to `stay_folio_windows`. Do not assume these are interchangeable or rename/drop either table without testing fresh Alembic-only installs, metadata-bootstrap installs, and supported upgrades.\n- Schema behavior is spread across Alembic, SQLAlchemy metadata declarations, legacy SQL, and SQLite runtime compatibility edits. Source-level inventory must include all of these paths.\n\n## 5. Important gaps and design decisions
+## 4. Naming and schema-source cautions
+
+- The purchasing Core tables are `purchase_order_lines`, `goods_receipts`, and `goods_receipt_lines`—not `purchase_order_items`, `purchase_receipts`, or `purchase_receipt_items`. Keep documentation and future constraints aligned with the actual declarations.
+- The current ORM model uses `folio_windows`, while revision `0005_stay_folio_windows` and legacy SQL refer to `stay_folio_windows`. Do not assume these are interchangeable or rename/drop either table without testing fresh Alembic-only installs, metadata-bootstrap installs, and supported upgrades.
+- Schema behavior is spread across Alembic, SQLAlchemy metadata declarations, legacy SQL, and SQLite runtime compatibility edits. Source-level inventory must include all of these paths.
+
+## 5. Important gaps and design decisions
 
 1. **Ownership columns are not enough by themselves.** A table with `property_id` can still reference a room, guest, folio, supplier, or reservation from another property unless the database constraints and application checks prevent it.
 2. **Global uniqueness can break multi-property SaaS.** Review globally unique room numbers, room type names, guest/contact values, expense numbers, SKUs, menu names, and supplier identifiers. Scope uniqueness to the owning property or organization where appropriate, while retaining global uniqueness for truly global identity/slug fields.
