@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import CheckoutView from './CheckoutView';
 import PhaseACompletionPanel from './PhaseACompletionPanel';
 import StayLifecyclePanel from './StayLifecyclePanel';
@@ -10,6 +10,8 @@ type Reservation = { id: number; guest_id: number; guest_name: string; check_in:
 type FrontDeskData = { arrivals: Reservation[]; departures: Reservation[]; in_house: Reservation[] };
 type SearchResult = { type: 'guest' | 'reservation' | 'room' | 'folio'; id: number; label: string; secondary: string; guest_id?: number; room_id?: number; folio_id?: number; reservation_id?: number };
 type WalkInRoom = { roomId: number; occupantGuestId: string; rate: string; discountPercent: string; fixedDiscount: string };
+
+type EffectiveSettings = { settings: { check_in_time: string; check_out_time: string }; property_id: number };
 
 type Props = {
   user: User;
@@ -30,6 +32,8 @@ const money = (value: number | string) => Number(value || 0).toLocaleString(unde
 export default function FrontDeskPMSView({ user, data, rooms, reservations, guests, roomTypes, onRefresh, api }: Props) {
   const canOperate = user.role === 'admin' || user.role === 'reception';
   const today = new Date().toISOString().slice(0, 10);
+  const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
+  useEffect(() => { let active = true; api<EffectiveSettings>('/api/settings/effective').then(value => { if (active) setEffectiveSettings(value); }).catch(() => { if (active) setEffectiveSettings(null); }); return () => { active = false; }; }, [api]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [rackStart, setRackStart] = useState(today);
   const [checkoutReservation, setCheckoutReservation] = useState<Reservation | null>(null);
@@ -168,7 +172,7 @@ export default function FrontDeskPMSView({ user, data, rooms, reservations, gues
   if (checkoutReservation) return <CheckoutView folioId={checkoutReservation.folio_id} guestName={checkoutReservation.guest_name} reservationId={checkoutReservation.id} onComplete={async () => { setCheckoutReservation(null); await onRefresh(); }} onClose={() => setCheckoutReservation(null)} api={api} />;
 
   return <section className="page">
-    <div className="page-heading"><div><p className="muted">Reception workstation</p><h2>Front Desk 2.0</h2></div><span className="room-count">{data.in_house.length} in house</span></div>
+    <div className="page-heading"><div><p className="muted">Reception workstation</p><h2>Front Desk 2.0</h2>{effectiveSettings && <small className="muted">Property schedule: check-in {effectiveSettings.settings.check_in_time} · check-out {effectiveSettings.settings.check_out_time}. Actual check-in/out timestamps are recorded when the guest transition is performed.</small>}</div><span className="room-count">{data.in_house.length} in house</span></div>
     {error && <p className="notice" style={{ borderColor: '#d28b8b' }}>{error}</p>}
     {message && <p className="notice">{message}</p>}
 
