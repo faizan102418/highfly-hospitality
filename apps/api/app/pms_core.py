@@ -186,7 +186,6 @@ def list_groups(db: Session = Depends(get_db), user: User = Depends(require_role
     return db.scalars(select(BookingGroup).where(BookingGroup.property_id == property_.id).order_by(BookingGroup.id.desc())).all()
 
 
-@router.get("/groups/{group_id}", response_model=GroupResponse)
 def authorized_group_or_404(db: Session, group_id: int, user_id: int) -> BookingGroup:
     group = db.get(BookingGroup, group_id)
     if group is None or group.property_id is None:
