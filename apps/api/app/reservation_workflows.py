@@ -16,6 +16,7 @@ from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Reser
 from .pms_core import BookingGroup, GroupReservation, Stay
 from .folio_integrity import item_has_active_charge
 from .ledger import post_deposit_received
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api", tags=["reservation-workflows"])
 ACTIVE_STATUSES = ("reserved", "checked_in")
@@ -98,6 +99,22 @@ def reservation_rooms(db: Session, reservation_id: int) -> list[int]:
     return db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation_id)).all()
 
 
+def validate_reservation_room_properties(db: Session, reservation: Reservation, room_ids: list[int]) -> None:
+    if not room_ids:
+        return
+    rooms = db.scalars(select(Room).where(Room.id.in_(room_ids))).all()
+    if len(rooms) != len(set(room_ids)) or any(room.property_id != reservation.property_id for room in rooms):
+        raise HTTPException(status_code=409, detail="Reservation has room assignments outside its property")
+
+
+def authorized_reservation_or_404(db: Session, reservation_id: int, user_id: int) -> Reservation:
+    reservation = db.get(Reservation, reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    resolve_authorized_property(db, user_id, reservation.property_id)
+    return reservation
+
+
 def ensure_stay_children(db: Session, stay: Stay, guest_id: int | None = None) -> None:
     occupant_id = guest_id or stay.guest_id
     if occupant_id and not db.scalar(select(StayOccupant.id).where(StayOccupant.stay_id == stay.id)):
@@ -108,10 +125,14 @@ def ensure_stay_children(db: Session, stay: Stay, guest_id: int | None = None) -
 
 @router.post("/reservations/workflow", status_code=201)
 def create_reservation_workflow(payload: ReservationWorkflowCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
     if payload.check_out <= payload.check_in:
         raise HTTPException(status_code=400, detail="Check-out must be after check-in")
-    if not db.get(Guest, payload.guest_id):
+    booking_guest = db.get(Guest, payload.guest_id)
+    if booking_guest is None:
         raise HTTPException(status_code=400, detail="Booking guest does not exist")
+    if booking_guest.property_id != property_.id:
+        raise HTTPException(status_code=409, detail="Booking guest belongs to a different property")
     if payload.group_id and not db.get(BookingGroup, payload.group_id):
         raise HTTPException(status_code=400, detail="Booking group does not exist")
     room_ids = [item.room_id for item in payload.rooms]
@@ -121,6 +142,8 @@ def create_reservation_workflow(payload: ReservationWorkflowCreate, db: Session 
     if len(locked_rooms) != len(room_ids):
         raise HTTPException(status_code=400, detail="One or more rooms do not exist")
     rooms = [locked_rooms[room_id] for room_id in room_ids]
+    if any(room.property_id != property_.id for room in rooms):
+        raise HTTPException(status_code=409, detail="All rooms must belong to the authorized property")
     if any(room.status in ("dirty", "out_of_order") for room in rooms):
         raise HTTPException(status_code=409, detail="One or more rooms are not operationally bookable")
     conflicts = [room.number for room in rooms if overlaps(db, room.id, payload.check_in, payload.check_out)]
@@ -133,14 +156,17 @@ def create_reservation_workflow(payload: ReservationWorkflowCreate, db: Session 
     for item in payload.rooms:
         discount, net = discount_values(item.agreed_rate, item.discount_percent, item.fixed_discount)
         occupant_id = item.occupant_guest_id or payload.guest_id
-        if not db.get(Guest, occupant_id):
+        occupant_guest = db.get(Guest, occupant_id)
+        if occupant_guest is None:
             raise HTTPException(status_code=400, detail=f"Occupant guest {occupant_id} does not exist")
+        if occupant_guest.property_id != property_.id:
+            raise HTTPException(status_code=409, detail="Occupant guest belongs to a different property")
         total_estimated += money(net) * stay_days
         stay_values.append((item, discount, net, occupant_id))
     if payload.deposit_received > total_estimated:
         raise HTTPException(status_code=400, detail="Deposit received exceeds the estimated stay value")
 
-    reservation = Reservation(guest_id=payload.guest_id, check_in=payload.check_in, check_out=payload.check_out, status="reserved", notes=payload.notes)
+    reservation = Reservation(property_id=property_.id, guest_id=payload.guest_id, check_in=payload.check_in, check_out=payload.check_out, status="reserved", notes=payload.notes)
     db.add(reservation); db.flush()
     folio = Folio(reservation_id=reservation.id, status="open")
     db.add(folio); db.flush()
@@ -221,15 +247,14 @@ def create_reservation_workflow(payload: ReservationWorkflowCreate, db: Session 
 
 @router.patch("/reservations/{reservation_id}")
 def update_reservation(reservation_id: int, payload: ReservationUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
     if reservation.status not in ACTIVE_STATUSES: raise HTTPException(status_code=409, detail="Only active reservations can be modified")
     check_in = payload.check_in or reservation.check_in; check_out = payload.check_out or reservation.check_out
     if check_out <= check_in: raise HTTPException(status_code=400, detail="Check-out must be after check-in")
     if reservation.status == "checked_in" and check_in != reservation.check_in:
         raise HTTPException(status_code=409, detail="Check-in date cannot be changed after arrival")
     if reservation.status == "checked_in":
-        business_date = get_current_business_date(db)
+        business_date = get_current_business_date(db, property_id=reservation.property_id)
         if check_out < business_date:
             raise HTTPException(status_code=409, detail="An in-house reservation cannot be shortened to a past business date")
         for stay in db.scalars(select(Stay).where(Stay.reservation_id == reservation_id)).all():
@@ -250,10 +275,15 @@ def update_reservation(reservation_id: int, payload: ReservationUpdate, db: Sess
                     status_code=409,
                     detail=f"Cannot shorten stay {stay.id} below {int(charged_total)} already-posted room night(s)",
                 )
-    if payload.guest_id is not None and not db.get(Guest, payload.guest_id):
-        raise HTTPException(status_code=400, detail="Guest does not exist")
+    if payload.guest_id is not None:
+        guest = db.get(Guest, payload.guest_id)
+        if guest is None:
+            raise HTTPException(status_code=400, detail="Guest does not exist")
+        if guest.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Guest belongs to a different property")
     old = {"check_in": str(reservation.check_in), "check_out": str(reservation.check_out), "guest_id": reservation.guest_id, "notes": reservation.notes}
     current_rooms = reservation_rooms(db, reservation_id)
+    validate_reservation_room_properties(db, reservation, current_rooms)
     locked_rooms = lock_rooms(db, current_rooms)
     conflicts = [locked_rooms[room_id].number for room_id in current_rooms if room_id in locked_rooms and overlaps(db, room_id, check_in, check_out, reservation_id)]
     if conflicts: raise HTTPException(status_code=409, detail=f"Updated dates conflict with room(s): {', '.join(conflicts)}")
@@ -279,14 +309,16 @@ def update_reservation(reservation_id: int, payload: ReservationUpdate, db: Sess
 
 @router.put("/reservations/{reservation_id}/rooms")
 def replace_reservation_rooms(reservation_id: int, payload: RoomAssignmentsUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
     if reservation.status != "reserved": raise HTTPException(status_code=409, detail="Room allocation can only be changed before check-in")
     old_ids = reservation_rooms(db, reservation_id)
+    validate_reservation_room_properties(db, reservation, old_ids)
     if len(payload.room_ids) != len(set(payload.room_ids)): raise HTTPException(status_code=400, detail="Duplicate room IDs are not allowed")
     locked_rooms = lock_rooms(db, payload.room_ids)
     if len(locked_rooms) != len(payload.room_ids): raise HTTPException(status_code=400, detail="One or more rooms do not exist")
     rooms = [locked_rooms[room_id] for room_id in payload.room_ids]
+    if any(room.property_id != reservation.property_id for room in rooms):
+        raise HTTPException(status_code=409, detail="All rooms must belong to the reservation property")
     if any(room.status in ("dirty", "out_of_order") for room in rooms): raise HTTPException(status_code=409, detail="One or more rooms are not operationally bookable")
     conflicts = [room.number for room in rooms if overlaps(db, room.id, reservation.check_in, reservation.check_out, reservation_id)]
     if conflicts: raise HTTPException(status_code=409, detail=f"Room(s) unavailable for dates: {', '.join(conflicts)}")
@@ -302,12 +334,12 @@ def replace_reservation_rooms(reservation_id: int, payload: RoomAssignmentsUpdat
 
 @router.post("/reservations/{reservation_id}/extend")
 def extend_stay(reservation_id: int, payload: ExtendStay, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
     if reservation.status != "checked_in": raise HTTPException(status_code=409, detail="Only an in-house stay can be extended")
     if payload.new_check_out <= reservation.check_in or payload.new_check_out <= date.today(): raise HTTPException(status_code=400, detail="New check-out date is invalid")
     if payload.new_check_out <= reservation.check_out: raise HTTPException(status_code=400, detail="Use a later date to extend the stay")
     room_ids = reservation_rooms(db, reservation_id)
+    validate_reservation_room_properties(db, reservation, room_ids)
     locked_rooms = lock_rooms(db, room_ids)
     conflicts = [locked_rooms[room_id].number for room_id in room_ids if room_id in locked_rooms and overlaps(db, room_id, reservation.check_out, payload.new_check_out, reservation_id)]
     if conflicts: raise HTTPException(status_code=409, detail=f"Extension conflicts with room(s): {', '.join(conflicts)}")
@@ -329,10 +361,11 @@ def extend_stay(reservation_id: int, payload: ExtendStay, db: Session = Depends(
 
 @router.post("/reservations/{reservation_id}/cancel")
 def cancel_reservation(reservation_id: int, payload: ActionReason | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
     if reservation.status not in CANCELLABLE_STATUSES: raise HTTPException(status_code=409, detail="Only reservations awaiting check-in can be cancelled")
-    reservation.status = "cancelled"; room_ids = reservation_rooms(db, reservation_id)
+    room_ids = reservation_rooms(db, reservation_id)
+    validate_reservation_room_properties(db, reservation, room_ids)
+    reservation.status = "cancelled"
     for room_id in room_ids:
         room = db.get(Room, room_id)
         if room and room.status == "reserved": room.status = "available"
@@ -342,11 +375,12 @@ def cancel_reservation(reservation_id: int, payload: ActionReason | None = None,
 
 @router.post("/reservations/{reservation_id}/no-show")
 def mark_no_show(reservation_id: int, payload: ActionReason | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
     if reservation.status != "reserved": raise HTTPException(status_code=409, detail="Only a reserved arrival can be marked no-show")
     if reservation.check_in > date.today(): raise HTTPException(status_code=409, detail="A future reservation cannot be marked no-show")
-    reservation.status = "no_show"; room_ids = reservation_rooms(db, reservation_id)
+    room_ids = reservation_rooms(db, reservation_id)
+    validate_reservation_room_properties(db, reservation, room_ids)
+    reservation.status = "no_show"
     for room_id in room_ids:
         room = db.get(Room, room_id)
         if room and room.status == "reserved": room.status = "available"
@@ -355,10 +389,11 @@ def mark_no_show(reservation_id: int, payload: ActionReason | None = None, db: S
 
 
 @router.get("/reservations/{reservation_id}/availability-check")
-def reservation_availability_check(reservation_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    reservation = db.get(Reservation, reservation_id)
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
-    room_ids = reservation_rooms(db, reservation_id); conflicts = []
+def reservation_availability_check(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    reservation = authorized_reservation_or_404(db, reservation_id, user.id)
+    room_ids = reservation_rooms(db, reservation_id)
+    validate_reservation_room_properties(db, reservation, room_ids)
+    conflicts = []
     for room_id in room_ids:
         room = db.get(Room, room_id)
         if room and overlaps(db, room_id, reservation.check_in, reservation.check_out, reservation_id): conflicts.append(room.number)
