@@ -14,8 +14,8 @@ import app.pms_core  # noqa: F401
 import app.financial_authority  # noqa: F401
 from app.deposit_transfer import DepositTransferCreate, stay_deposit_balance, transfer_deposit
 from app.ledger import post_deposit_received, scoped_idempotency_key
-from app.models import BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, Reservation, Role, User
-from app.tenancy import PropertyUserAccess
+from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, LedgerEntry, Reservation, Role, Room, RoomType, User
+from app.tenancy import Organization, Property, PropertyUserAccess
 from app.pms_core import Stay
 
 
@@ -147,6 +147,75 @@ class DepositTransferTests(unittest.TestCase):
                 db=self.db,
                 user=self.db.get(User, 1),
             )
+
+    def test_cross_property_destination_is_denied_without_partial_writes(self):
+        suffix = "transfer-isolation"
+        organization = Organization(name=f"Foreign Org {suffix}", slug=f"foreign-org-{suffix}")
+        self.db.add(organization)
+        self.db.flush()
+        foreign_property = Property(
+            organization_id=organization.id,
+            name=f"Foreign Property {suffix}",
+            code="FTR-ISO",
+            slug=f"foreign-property-{suffix}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(foreign_property)
+        self.db.flush()
+        foreign_guest = Guest(property_id=foreign_property.id, full_name="Foreign transfer guest")
+        foreign_room_type = RoomType(property_id=foreign_property.id, name="Foreign room type", base_rate=100)
+        self.db.add_all([foreign_guest, foreign_room_type])
+        self.db.flush()
+        foreign_room = Room(property_id=foreign_property.id, number="F-1", room_type_id=foreign_room_type.id, status="occupied")
+        foreign_reservation = Reservation(
+            property_id=foreign_property.id,
+            guest_id=foreign_guest.id,
+            check_in=date(2026, 9, 8),
+            check_out=date(2026, 9, 10),
+            status="checked_in",
+        )
+        self.db.add_all([foreign_room, foreign_reservation])
+        self.db.flush()
+        foreign_folio = Folio(reservation_id=foreign_reservation.id, status="open")
+        self.db.add(foreign_folio)
+        self.db.flush()
+        foreign_stay = Stay(
+            reservation_id=foreign_reservation.id,
+            room_id=foreign_room.id,
+            guest_id=foreign_guest.id,
+            status="checked_in",
+            check_in=date(2026, 9, 8),
+            check_out=date(2026, 9, 10),
+            agreed_rate=100,
+            deposit_required=100,
+        )
+        self.db.add(foreign_stay)
+        self.db.commit()
+
+        before = (
+            self.db.scalar(select(func.count(DepositTransaction.id))),
+            self.db.scalar(select(func.count(FinancialTransaction.id))),
+            self.db.scalar(select(func.count(LedgerEntry.id))),
+            self.db.scalar(select(func.count(AuditLog.id))),
+        )
+        with self.assertRaises(HTTPException) as denied:
+            transfer_deposit(
+                1,
+                DepositTransferCreate(destination_stay_id=foreign_stay.id, amount=Decimal("10.00"), reason="Cross-property"),
+                idempotency_key="cross-property-transfer",
+                db=self.db,
+                user=self.db.get(User, 1),
+            )
+        self.assertIn(denied.exception.status_code, (403, 404))
+        self.db.rollback()
+        after = (
+            self.db.scalar(select(func.count(DepositTransaction.id))),
+            self.db.scalar(select(func.count(FinancialTransaction.id))),
+            self.db.scalar(select(func.count(LedgerEntry.id))),
+            self.db.scalar(select(func.count(AuditLog.id))),
+        )
+        self.assertEqual(after, before)
 
     def test_transfer_cannot_exceed_source_deposit(self):
         with self.assertRaisesRegex(HTTPException, "available source deposit balance of 80.00"):
