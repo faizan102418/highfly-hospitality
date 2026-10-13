@@ -189,5 +189,65 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         )
 
 
+    def test_deposit_receive_replay_is_idempotent(self):
+        payload = {"transaction_type": "received", "amount": Decimal("25.00"), "payment_method": "cash", "reference": "RECEIVE-REPLAY"}
+        first = create_deposit_with_ledger(self.stay.id, payload, "deposit-receive-001", self.db, self.user)
+        replay = create_deposit_with_ledger(self.stay.id, payload, "deposit-receive-001", self.db, self.user)
+
+        self.assertFalse(first["replayed"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(first["id"], replay["id"])
+        self.assertEqual(
+            self.db.scalar(select(func.count()).select_from(DepositTransaction).where(DepositTransaction.stay_id == self.stay.id, DepositTransaction.transaction_type == "received")),
+            1,
+        )
+        self.assertEqual(
+            self.db.scalar(select(func.count()).select_from(FinancialTransaction).where(FinancialTransaction.transaction_type == "deposit_received", FinancialTransaction.reservation_id == self.reservation.id)),
+            1,
+        )
+
+    def test_deposit_refund_replay_is_idempotent_and_partial_application_replay_is_safe(self):
+        receive_payload = {"transaction_type": "received", "amount": Decimal("100.00"), "payment_method": "cash"}
+        create_deposit_with_ledger(self.stay.id, receive_payload, "deposit-seed-001", self.db, self.user)
+
+        refund_payload = {"transaction_type": "refunded", "amount": Decimal("20.00"), "payment_method": "cash", "reference": "REFUND-REPLAY"}
+        refund_first = create_deposit_with_ledger(self.stay.id, refund_payload, "deposit-refund-001", self.db, self.user)
+        refund_replay = create_deposit_with_ledger(self.stay.id, refund_payload, "deposit-refund-001", self.db, self.user)
+        self.assertFalse(refund_first["replayed"])
+        self.assertTrue(refund_replay["replayed"])
+        self.assertEqual(refund_first["id"], refund_replay["id"])
+
+        apply_payload = {"transaction_type": "applied", "amount": Decimal("30.00"), "reference": "APPLY-PARTIAL"}
+        apply_first = create_deposit_with_ledger(self.stay.id, apply_payload, "deposit-partial-apply-001", self.db, self.user)
+        apply_replay = create_deposit_with_ledger(self.stay.id, apply_payload, "deposit-partial-apply-001", self.db, self.user)
+        self.assertFalse(apply_first["replayed"])
+        self.assertTrue(apply_replay["replayed"])
+        self.assertEqual(apply_first["id"], apply_replay["id"])
+        self.assertEqual(apply_first["balance"], Decimal("50.00"))
+        self.assertEqual(apply_replay["balance"], Decimal("50.00"))
+
+        for transaction_type, expected in (("deposit_received", 1), ("deposit_refund", 1), ("deposit_applied", 1)):
+            self.assertEqual(
+                self.db.scalar(select(func.count()).select_from(FinancialTransaction).where(FinancialTransaction.transaction_type == transaction_type, FinancialTransaction.reservation_id == self.reservation.id)),
+                expected,
+            )
+        self.assertEqual(
+            self.db.scalar(select(func.count()).select_from(DepositTransaction).where(DepositTransaction.stay_id == self.stay.id)),
+            3,
+        )
+
+    def test_deposit_idempotency_key_rejects_replay_with_changed_amount(self):
+        payload = {"transaction_type": "received", "amount": Decimal("25.00"), "payment_method": "cash"}
+        create_deposit_with_ledger(self.stay.id, payload, "deposit-receive-conflict-001", self.db, self.user)
+        with self.assertRaisesRegex(HTTPException, "different deposit parameters"):
+            create_deposit_with_ledger(
+                self.stay.id,
+                {"transaction_type": "received", "amount": Decimal("26.00"), "payment_method": "cash"},
+                "deposit-receive-conflict-001",
+                self.db,
+                self.user,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
