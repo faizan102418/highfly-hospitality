@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
+from app.ledger import post_deposit_received
 from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
     DepositApplyCreate,
@@ -71,7 +72,19 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.add(StayOccupant(stay_id=stay.id, guest_id=guests[1].id, role="primary", is_primary=True, check_in=stay.check_in, check_out=stay.check_out))
         window = StayFolioWindow(folio_id=folio.id, stay_id=stay.id, name="Room charges", payer_type="guest", guest_id=guests[1].id, status="open")
         self.db.add(window)
-        self.db.add(DepositTransaction(stay_id=stay.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id))
+        seed_deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id)
+        self.db.add(seed_deposit)
+        self.db.flush()
+        post_deposit_received(
+            self.db,
+            stay_id=stay.id,
+            folio_id=folio.id,
+            reservation_id=reservation.id,
+            deposit_id=seed_deposit.id,
+            amount=Decimal("200.00"),
+            method="cash",
+            created_by=self.user.id,
+        )
         business_date_state = self.db.get(BusinessDateState, 1)
         if business_date_state is None:
             self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
@@ -119,14 +132,32 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.expire_all()
         other_stay = self.db.get(Stay, other_stay.id)
 
-        transferred = transfer_deposit(self.stay.id, DepositTransferCreate(target_stay_id=other_stay.id, amount=Decimal("50.00"), reason="Room split"), self.db, self.user)
+        transferred = transfer_deposit(
+            self.stay.id,
+            DepositTransferCreate(target_stay_id=other_stay.id, amount=Decimal("50.00"), reason="Room split"),
+            idempotency_key="phase-a-transfer-001",
+            db=self.db,
+            user=self.user,
+        )
         self.assertEqual(transferred["source_balance"], Decimal("150.00"))
-        self.assertEqual(transferred["target_balance"], Decimal("50.00"))
-        refunded = refund_deposit(self.stay.id, DepositRefundCreate(amount=Decimal("25.00"), payment_method="cash", reason="Guest request"), self.db, self.user)
+        self.assertEqual(transferred["destination_balance"], Decimal("50.00"))
+        refunded = refund_deposit(
+            self.stay.id,
+            DepositRefundCreate(amount=Decimal("25.00"), payment_method="cash", reason="Guest request"),
+            idempotency_key="phase-a-refund-001",
+            db=self.db,
+            user=self.user,
+        )
         self.assertEqual(refunded["balance"], Decimal("125.00"))
         self.assertTrue(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.transaction_type == "deposit_refund")))
-        apply_result = apply_deposit(self.stay.id, DepositApplyCreate(folio_id=self.folio.id, amount=Decimal("100.00"), reason="Apply on arrival"), self.db, self.user)
-        self.assertEqual(apply_result["remaining_deposit"], Decimal("25.00"))
+        apply_result = apply_deposit(
+            self.stay.id,
+            DepositApplyCreate(folio_id=self.folio.id, amount=Decimal("100.00"), reason="Apply on arrival"),
+            idempotency_key="phase-a-apply-001",
+            db=self.db,
+            user=self.user,
+        )
+        self.assertEqual(apply_result["balance"], Decimal("25.00"))
         payment = self.db.scalar(select(Payment).where(Payment.folio_id == self.folio.id))
         self.assertIsNotNone(payment)
         self.assertEqual(payment.amount, Decimal("100.00"))
