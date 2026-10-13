@@ -21,6 +21,8 @@ MONEY = Decimal("0.01")
 class BookingGroup(Base):
     __tablename__ = "booking_groups"
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Nullable only for legacy groups that cannot be safely backfilled. Such groups fail closed.
+    property_id: Mapped[int | None] = mapped_column(ForeignKey("properties.id"), nullable=True, index=True)
     code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(160))
     group_type: Mapped[str] = mapped_column(String(40), default="group")
@@ -161,37 +163,52 @@ def authorized_folio_or_404(db: Session, folio_id: int, user_id: int) -> tuple[F
 
 @router.post("/groups", response_model=GroupResponse, status_code=201)
 def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
     if db.scalar(select(BookingGroup.id).where(BookingGroup.code == payload.code)):
         raise HTTPException(status_code=409, detail="Group code already exists")
     if payload.check_in and payload.check_out and payload.check_out <= payload.check_in:
         raise HTTPException(status_code=400, detail="Group check-out must be after check-in")
-    if payload.primary_guest_id and not db.get(Guest, payload.primary_guest_id):
-        raise HTTPException(status_code=400, detail="Primary guest does not exist")
-    group = BookingGroup(**payload.model_dump()); db.add(group); db.flush()
+    if payload.primary_guest_id:
+        primary_guest = db.get(Guest, payload.primary_guest_id)
+        if primary_guest is None:
+            raise HTTPException(status_code=400, detail="Primary guest does not exist")
+        if primary_guest.property_id != property_.id:
+            raise HTTPException(status_code=409, detail="Primary guest belongs to a different property")
+    group = BookingGroup(**payload.model_dump(), property_id=property_.id); db.add(group); db.flush()
     audit(db, user.id, "create", "booking_group", group.id, {"code": group.code, "name": group.name})
     db.commit(); db.refresh(group)
     return group
 
 
 @router.get("/groups", response_model=list[GroupResponse])
-def list_groups(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    return db.scalars(select(BookingGroup).order_by(BookingGroup.id.desc())).all()
+def list_groups(db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    property_ = resolve_authorized_property(db, user.id)
+    return db.scalars(select(BookingGroup).where(BookingGroup.property_id == property_.id).order_by(BookingGroup.id.desc())).all()
 
 
 @router.get("/groups/{group_id}", response_model=GroupResponse)
-def get_group(group_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
+def authorized_group_or_404(db: Session, group_id: int, user_id: int) -> BookingGroup:
     group = db.get(BookingGroup, group_id)
-    if not group:
+    if group is None or group.property_id is None:
         raise HTTPException(status_code=404, detail="Group not found")
+    resolve_authorized_property(db, user_id, group.property_id)
     return group
+
+
+@router.get("/groups/{group_id}", response_model=GroupResponse)
+def get_group(group_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    return authorized_group_or_404(db, group_id, user.id)
 
 
 @router.post("/groups/{group_id}/reservations", status_code=204)
 def link_reservation_to_group(group_id: int, payload: GroupReservationLink, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    group = db.get(BookingGroup, group_id)
+    group = authorized_group_or_404(db, group_id, user.id)
     reservation = db.get(Reservation, payload.reservation_id)
-    if not group or not reservation:
+    if reservation is None:
         raise HTTPException(status_code=404, detail="Group or reservation not found")
+    resolve_authorized_property(db, user.id, reservation.property_id)
+    if group.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Group and reservation must belong to the same property")
     exists = db.get(GroupReservation, {"group_id": group_id, "reservation_id": payload.reservation_id})
     if exists:
         raise HTTPException(status_code=409, detail="Reservation is already linked to this group")
@@ -201,14 +218,13 @@ def link_reservation_to_group(group_id: int, payload: GroupReservationLink, db: 
 
 
 @router.get("/groups/{group_id}/reservations")
-def group_reservations(group_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception"))):
-    if not db.get(BookingGroup, group_id):
-        raise HTTPException(status_code=404, detail="Group not found")
+def group_reservations(group_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
+    group = authorized_group_or_404(db, group_id, user.id)
     rows = db.execute(
         select(GroupReservation, Reservation, Guest.full_name)
         .join(Reservation, Reservation.id == GroupReservation.reservation_id)
         .join(Guest, Guest.id == Reservation.guest_id)
-        .where(GroupReservation.group_id == group_id)
+        .where(GroupReservation.group_id == group_id, Reservation.property_id == group.property_id)
         .order_by(Reservation.check_in, Reservation.id)
     ).all()
     return [
@@ -338,8 +354,15 @@ def create_folio_window(folio_id: int, name: str, payer_type: str = "guest", gue
             raise HTTPException(status_code=400, detail="Guest does not exist")
         if guest.property_id != reservation.property_id:
             raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
-    if payer_type in {"group", "company"} and group_id and not db.get(BookingGroup, group_id):
-        raise HTTPException(status_code=400, detail="Group does not exist")
+    if payer_type in {"group", "company"} and group_id:
+        group = db.get(BookingGroup, group_id)
+        if group is None or group.property_id is None:
+            raise HTTPException(status_code=404, detail="Group does not exist")
+        if group.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Folio window group belongs to a different property")
+        linked = db.scalar(select(GroupReservation.group_id).where(GroupReservation.group_id == group_id, GroupReservation.reservation_id == reservation.id))
+        if linked is None:
+            raise HTTPException(status_code=409, detail="Folio window group is not linked to this reservation")
     window = FolioWindow(folio_id=folio_id, name=name.strip(), payer_type=payer_type, guest_id=guest_id, group_id=group_id)
     db.add(window); db.flush()
     audit(db, user.id, "create", "folio_window", window.id, {"folio_id": folio_id, "payer_type": payer_type, "name": window.name})
