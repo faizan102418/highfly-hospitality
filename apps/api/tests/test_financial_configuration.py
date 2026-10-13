@@ -58,7 +58,7 @@ class FinancialConfigurationTests(unittest.TestCase):
         ).one()
         override.setting_value = None
         self.db.flush()
-        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), 0.125)
+        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), Decimal("0.125"))
 
     def test_financial_settings_are_scoped_to_requested_property(self):
         first = self.property
