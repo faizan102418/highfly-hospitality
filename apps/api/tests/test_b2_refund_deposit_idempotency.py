@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -17,11 +18,13 @@ from app.financial_models import PaymentRefund
 from app.financial_ops import RefundCreate, create_deposit_with_ledger, refund_payment
 from app.ledger import post_folio_payment, scoped_idempotency_key
 from app.models import (
+    AuditLog,
     BusinessDateState,
     DepositTransaction,
     FinancialTransaction,
     Folio,
     FolioItem,
+    LedgerEntry,
     Guest,
     Payment,
     Reservation,
@@ -32,6 +35,7 @@ from app.models import (
     User,
 )
 from app.pms_core import Stay
+from app.tenancy import Organization, Property
 
 
 class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
@@ -247,6 +251,93 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
                 self.db,
                 self.user,
             )
+
+
+    def test_ledger_posting_failure_rolls_back_canonical_deposit_receive(self):
+        before = {
+            "deposits": self.db.scalar(select(func.count()).select_from(DepositTransaction)),
+            "financial": self.db.scalar(select(func.count()).select_from(FinancialTransaction)),
+            "ledger": self.db.scalar(select(func.count()).select_from(LedgerEntry)),
+            "audit": self.db.scalar(select(func.count()).select_from(AuditLog)),
+        }
+        with patch("app.financial_ops.post_transaction", side_effect=RuntimeError("simulated ledger outage")):
+            with self.assertRaisesRegex(RuntimeError, "simulated ledger outage"):
+                create_deposit_with_ledger(
+                    self.stay.id,
+                    {"transaction_type": "received", "amount": Decimal("25.00"), "payment_method": "cash"},
+                    "deposit-rollback-001",
+                    self.db,
+                    self.user,
+                )
+        self.db.rollback()
+        self.assertEqual(self.db.scalar(select(func.count()).select_from(DepositTransaction)), before["deposits"])
+        self.assertEqual(self.db.scalar(select(func.count()).select_from(FinancialTransaction)), before["financial"])
+        self.assertEqual(self.db.scalar(select(func.count()).select_from(LedgerEntry)), before["ledger"])
+        self.assertEqual(self.db.scalar(select(func.count()).select_from(AuditLog)), before["audit"])
+
+    def test_cross_property_deposit_request_is_denied_without_writes(self):
+        organization = Organization(name="Isolated Organization", slug="isolated-org")
+        self.db.add(organization)
+        self.db.flush()
+        other_property = Property(
+            organization_id=organization.id,
+            name="Isolated Property",
+            code="ISO",
+            slug="isolated-property",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
+        other_guest = Guest(property_id=other_property.id, full_name="Other Property Guest")
+        other_room_type = RoomType(property_id=other_property.id, name="Other Standard", base_rate=100)
+        self.db.add_all([other_guest, other_room_type])
+        self.db.flush()
+        other_room = Room(property_id=other_property.id, number="ISO-1", room_type_id=other_room_type.id, status="occupied")
+        other_reservation = Reservation(
+            property_id=other_property.id,
+            guest_id=other_guest.id,
+            check_in=date(2026, 9, 8),
+            check_out=date(2026, 9, 10),
+            status="checked_in",
+        )
+        self.db.add_all([other_room, other_reservation])
+        self.db.flush()
+        other_stay = Stay(
+            reservation_id=other_reservation.id,
+            room_id=other_room.id,
+            status="checked_in",
+            check_in=other_reservation.check_in,
+            check_out=other_reservation.check_out,
+            deposit_required=Decimal("200.00"),
+            deposit_received=Decimal("0.00"),
+        )
+        self.db.add(other_stay)
+        self.db.commit()
+
+        before = (
+            self.db.scalar(select(func.count()).select_from(DepositTransaction)),
+            self.db.scalar(select(func.count()).select_from(FinancialTransaction)),
+            self.db.scalar(select(func.count()).select_from(LedgerEntry)),
+            self.db.scalar(select(func.count()).select_from(AuditLog)),
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            create_deposit_with_ledger(
+                other_stay.id,
+                {"transaction_type": "received", "amount": Decimal("25.00"), "payment_method": "cash"},
+                "cross-property-deposit-001",
+                self.db,
+                self.user,
+            )
+        self.assertIn(ctx.exception.status_code, (403, 404))
+        self.db.rollback()
+        after = (
+            self.db.scalar(select(func.count()).select_from(DepositTransaction)),
+            self.db.scalar(select(func.count()).select_from(FinancialTransaction)),
+            self.db.scalar(select(func.count()).select_from(LedgerEntry)),
+            self.db.scalar(select(func.count()).select_from(AuditLog)),
+        )
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":
