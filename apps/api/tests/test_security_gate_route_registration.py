@@ -8,15 +8,15 @@ from app.phase_a_workflows import router as legacy_phase_a_router
 
 class SecurityGateRouteRegistrationTests(unittest.TestCase):
     def test_overlapping_stay_and_deposit_paths_have_one_authoritative_handler(self):
-        expected = {
-            (pms_domain_router, "GET", "/stays/{stay_id}/deposits"): "app.pms_domain",
-            (pms_domain_router, "POST", "/stays/{stay_id}/occupants"): "app.pms_domain",
-            (pms_domain_router, "POST", "/reservations/{reservation_id}/split"): "app.pms_domain",
-            (phase_a_completion_router, "POST", "/stays/{stay_id}/deposits/refund"): "app.phase_a_completion",
-            (phase_a_completion_router, "POST", "/stays/{stay_id}/deposits/transfer"): "app.phase_a_completion",
-            (phase_a_completion_router, "POST", "/stays/{stay_id}/deposits/apply"): "app.phase_a_completion",
-        }
-        for (router, method, path), expected_module in expected.items():
+        expected = [
+            (pms_domain_router, "GET", "/stays/{stay_id}/deposits", "app.pms_domain"),
+            (pms_domain_router, "POST", "/stays/{stay_id}/occupants", "app.pms_domain"),
+            (pms_domain_router, "POST", "/reservations/{reservation_id}/split", "app.pms_domain"),
+            (phase_a_completion_router, "POST", "/stays/{stay_id}/deposits/refund", "app.phase_a_completion"),
+            (phase_a_completion_router, "POST", "/stays/{stay_id}/deposits/transfer", "app.phase_a_completion"),
+            (phase_a_completion_router, "POST", "/stays/{stay_id}/deposits/apply", "app.phase_a_completion"),
+        ]
+        for router, method, path, expected_module in expected:
             with self.subTest(method=method, path=path):
                 matches = [
                     route for route in router.routes
