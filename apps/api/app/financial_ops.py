@@ -97,10 +97,10 @@ def payment_refunded_amount(db: Session, payment_id: int) -> Decimal:
     return money(value)
 
 
-def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
+def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict, property_id: int | None = None) -> None:
     import json
-    property_id = resolve_authorized_property(db, user_id).id
-    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+    resolved_property_id = property_id or resolve_authorized_property(db, user_id).id
+    db.add(AuditLog(property_id=resolved_property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def _refund_response(db: Session, folio: Folio, refund: PaymentRefund, replayed: bool) -> dict:
@@ -341,7 +341,10 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
     transaction_type = payload.get("transaction_type"); amount = money(payload.get("amount", 0))
     if transaction_type not in {"received", "applied", "refunded", "adjusted"} or amount <= 0: raise HTTPException(status_code=400, detail="Invalid deposit transaction")
     key = (idempotency_key or "").strip()
-    folio = db.scalar(select(Folio).where(Folio.reservation_id == stay.reservation_id))
+    folio_query = select(Folio).where(Folio.reservation_id == stay.reservation_id)
+    if payload.get("folio_id") is not None:
+        folio_query = folio_query.where(Folio.id == payload.get("folio_id"))
+    folio = db.scalar(folio_query.order_by(Folio.id))
     if transaction_type == "applied" and (folio is None or folio.status != "open"):
         raise HTTPException(status_code=409, detail="Deposit application requires an open folio for the stay's reservation")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
@@ -364,7 +367,7 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
             existing_payment = db.scalar(select(Payment).where(Payment.folio_id == existing_deposit.folio_id, Payment.reference == existing_deposit.reference, Payment.method == "deposit")) if transaction_type == "applied" else None
             if transaction_type == "applied" and existing_payment is None:
                 raise HTTPException(status_code=409, detail="Idempotent deposit application is missing its folio payment record")
-            return {"id": existing_deposit.id, "stay_id": stay.id, "transaction_type": existing_deposit.transaction_type, "amount": existing_deposit.amount, "payment_id": existing_payment.id if existing_payment else None, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
+            return {"id": existing_deposit.id, "stay_id": stay.id, "transaction_type": existing_deposit.transaction_type, "amount": existing_deposit.amount, "payment_id": existing_payment.id if existing_payment else None, "reference": existing_deposit.reference, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
     reservation = db.get(Reservation, stay.reservation_id); current = stay_deposit_ledger_balance(db, stay.id); signed = amount if transaction_type in {"received", "adjusted"} else -amount; new_balance = money(current + signed)
     if new_balance < 0: raise HTTPException(status_code=409, detail="Deposit transaction exceeds available deposit balance")
     required_deposit = money(stay.agreed_rate * max(0, (stay.check_out - stay.check_in).days))
@@ -403,6 +406,6 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
         if transaction_type == "applied" and replay_payment is None:
             db.rollback()
             raise HTTPException(status_code=409, detail="Idempotent deposit application is missing its folio payment record")
-        return {"id": replay_deposit.id, "stay_id": stay.id, "transaction_type": replay_deposit.transaction_type, "amount": replay_deposit.amount, "payment_id": replay_payment.id if replay_payment else None, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
-    stay.deposit_received = stay_deposit_ledger_balance(db, stay.id); audit(db, user.id, "deposit", "stay", stay_id, {"deposit_transaction_id": deposit.id, "transaction_type": transaction_type, "amount": str(amount), "new_balance": str(stay.deposit_received)}); db.commit(); db.refresh(deposit)
-    return {"id": deposit.id, "stay_id": stay.id, "transaction_type": deposit.transaction_type, "amount": deposit.amount, "payment_id": payment.id if payment else None, "balance": stay.deposit_received, "replayed": False}
+        return {"id": replay_deposit.id, "stay_id": stay.id, "transaction_type": replay_deposit.transaction_type, "amount": replay_deposit.amount, "payment_id": replay_payment.id if replay_payment else None, "reference": replay_deposit.reference, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
+    stay.deposit_received = stay_deposit_ledger_balance(db, stay.id); audit(db, user.id, "deposit", "stay", stay_id, {"deposit_transaction_id": deposit.id, "transaction_type": transaction_type, "amount": str(amount), "new_balance": str(stay.deposit_received)}, property_id=property_.id); db.commit(); db.refresh(deposit)
+    return {"id": deposit.id, "stay_id": stay.id, "transaction_type": deposit.transaction_type, "amount": deposit.amount, "payment_id": payment.id if payment else None, "reference": deposit.reference, "balance": stay.deposit_received, "replayed": False}
