@@ -164,6 +164,30 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(payment.method, "deposit")
         self.assertTrue(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.transaction_type == "deposit_applied")))
 
+    def test_occupant_change_rejects_foreign_property_guest_without_side_effects(self):
+        other_property = ensure_test_property(self.db)
+        foreign_guest = Guest(property_id=other_property.id, full_name=f"Foreign occupant {id(self)}")
+        self.db.add(foreign_guest)
+        self.db.flush()
+        occupant = self.db.scalar(
+            select(StayOccupant).where(StayOccupant.stay_id == self.stay.id, StayOccupant.is_primary.is_(True))
+        )
+        original_guest_id = occupant.guest_id
+        before_audits = self.db.query(AuditLog).count()
+
+        with self.assertRaises(HTTPException) as raised:
+            change_stay_occupant_guest(
+                self.stay.id,
+                occupant.id,
+                OccupantGuestChange(guest_id=foreign_guest.id, reason="Cross-property attempt"),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(self.db.get(StayOccupant, occupant.id).guest_id, original_guest_id)
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+
     def test_folio_item_routing_and_window_lifecycle(self):
         item = FolioItem(folio_id=self.folio.id, stay_id=self.stay.id, description="Room minibar", category="minibar", quantity=Decimal("1"), unit_price=Decimal("40.00"), discount=Decimal("0.00"))
         self.db.add(item)
