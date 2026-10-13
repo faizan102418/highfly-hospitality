@@ -77,7 +77,10 @@ def discount_values(rate: Decimal, percent: Decimal, fixed: Decimal) -> tuple[De
 
 
 def audit(db: Session, user_id: int, action: str, entity_id: int, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type="reservation", entity_id=str(entity_id), details=json.dumps(details)))
+    property_id = db.scalar(select(Reservation.property_id).where(Reservation.id == entity_id))
+    if property_id is None:
+        raise HTTPException(status_code=409, detail="Cannot audit reservation workflow without property context")
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type="reservation", entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def overlaps(db: Session, room_id: int, check_in: date, check_out: date, exclude_reservation_id: int | None = None) -> bool:
