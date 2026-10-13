@@ -25,6 +25,16 @@ class SecurityGateRouteRegistrationTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(matches), 1, f"{method} {path} should be registered exactly once on its canonical router")
                 self.assertEqual(matches[0].endpoint.__module__, expected_module)
+                if path in {
+                    "/stays/{stay_id}/deposits/refund",
+                    "/stays/{stay_id}/deposits/transfer",
+                    "/stays/{stay_id}/deposits/apply",
+                }:
+                    self.assertIn(
+                        "idempotency_key",
+                        matches[0].endpoint.__code__.co_varnames,
+                        f"{method} {path} must accept an Idempotency-Key for safe replay",
+                    )
 
     def test_unledgered_legacy_receive_url_is_not_registered(self):
         legacy_path = "/stays/{stay_id}/deposits/receive"
