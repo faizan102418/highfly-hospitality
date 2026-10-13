@@ -220,8 +220,13 @@ def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depen
 
 @router.get("/stays/{stay_id}/occupants")
 def list_stay_occupants(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    authorized_stay_or_404(db, stay_id, user.id)
-    rows = db.execute(select(StayOccupant, Guest.full_name).join(Guest, Guest.id == StayOccupant.guest_id).where(StayOccupant.stay_id == stay_id).order_by(StayOccupant.is_primary.desc(), StayOccupant.id)).all()
+    _stay, reservation = authorized_stay_or_404(db, stay_id, user.id)
+    rows = db.execute(
+        select(StayOccupant, Guest.full_name)
+        .join(Guest, Guest.id == StayOccupant.guest_id)
+        .where(StayOccupant.stay_id == stay_id, Guest.property_id == reservation.property_id)
+        .order_by(StayOccupant.is_primary.desc(), StayOccupant.id)
+    ).all()
     return [{"id": o.id, "stay_id": o.stay_id, "guest_id": o.guest_id, "guest_name": name, "role": o.role, "is_primary": o.is_primary, "check_in": o.check_in, "check_out": o.check_out, "notes": o.notes} for o, name in rows]
 
 
