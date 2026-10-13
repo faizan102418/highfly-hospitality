@@ -19,6 +19,10 @@ class Organization(Base):
 
 class Property(Base):
     __tablename__ = "properties"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "code", name="uq_properties_org_code"),
+        UniqueConstraint("organization_id", "slug", name="uq_properties_org_slug"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
@@ -34,6 +38,9 @@ class Property(Base):
 
 class PropertyUserAccess(Base):
     __tablename__ = "property_user_access"
+    __table_args__ = (
+        UniqueConstraint("user_id", "property_id", name="uq_property_user_access"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -45,6 +52,9 @@ class PropertyUserAccess(Base):
 
 class PropertySetting(Base):
     __tablename__ = "property_settings"
+    __table_args__ = (
+        UniqueConstraint("property_id", "setting_key", name="uq_property_settings_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     property_id: Mapped[int] = mapped_column(ForeignKey("properties.id", ondelete="CASCADE"), index=True)
