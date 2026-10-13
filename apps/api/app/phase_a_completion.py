@@ -15,7 +15,7 @@ from .db import Base, get_db
 from .tenancy import resolve_authorized_property
 from .ledger import post_transaction
 from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, Room, StayOccupant, User
-from .pms_core import GroupReservation, Stay
+from .pms_core import BookingGroup, GroupReservation, Stay
 from .stay_lifecycle import StayFolioWindow
 
 router = APIRouter(prefix="", tags=["phase-a-completion"])
@@ -301,6 +301,11 @@ def update_folio_window(stay_id: int, window_id: int, payload: FolioWindowUpdate
             raise HTTPException(status_code=400, detail="Window payer guest belongs to a different property")
     effective_group_id = payload.group_id if payload.group_id is not None else window.group_id
     if effective_group_id is not None:
+        group = db.get(BookingGroup, effective_group_id)
+        if group is None or group.property_id is None:
+            raise HTTPException(status_code=404, detail="Window payer group not found")
+        if group.property_id != reservation.property_id:
+            raise HTTPException(status_code=409, detail="Window payer group belongs to a different property")
         group_link = db.scalar(
             select(GroupReservation.group_id).where(
                 GroupReservation.group_id == effective_group_id,
