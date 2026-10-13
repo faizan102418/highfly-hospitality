@@ -260,7 +260,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
             "ledger": self.db.scalar(select(func.count()).select_from(LedgerEntry)),
             "audit": self.db.scalar(select(func.count()).select_from(AuditLog)),
         }
-        with patch("app.financial_ops.post_transaction", side_effect=RuntimeError("simulated ledger outage")):
+        with patch("app.financial_ops.post_deposit_received", side_effect=RuntimeError("simulated ledger outage")):
             with self.assertRaisesRegex(RuntimeError, "simulated ledger outage"):
                 create_deposit_with_ledger(
                     self.stay.id,
