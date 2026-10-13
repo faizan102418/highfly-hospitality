@@ -277,6 +277,20 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as foreign_group_link_denied:
                 link_reservation_to_group(foreign_group.id, GroupReservationLink(reservation_id=allowed_reservation.id, role="member", notes=None), db, user)
             self.assertEqual(foreign_group_link_denied.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as workflow_group_denied:
+                create_reservation_workflow(
+                    ReservationWorkflowCreate(
+                        guest_id=allowed_guest.id,
+                        check_in=date(2026, 10, 1),
+                        check_out=date(2026, 10, 2),
+                        group_id=foreign_group.id,
+                        rooms=[ReservationRoomSetup(room_id=1, agreed_rate=Decimal("100.00"))],
+                    ),
+                    db,
+                    user,
+                )
+            self.assertEqual(workflow_group_denied.exception.status_code, 409)
             db.rollback()
 
 
