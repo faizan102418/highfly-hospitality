@@ -61,7 +61,7 @@ The current model contains more than the core front-desk tables. The following i
 | `folios` | Property child of reservation | Reservation and folio ownership must be consistent; one folio per reservation is the current model. |
 | `folio_windows` | Property child of folio/stay | Validate the parent chain and any room/stay references. |
 | `folio_items` | Property child of folio (optional stay link) | If both folio and stay are set, they must resolve to the same property and compatible reservation. |
-| `payments` | Property child of folio | Payment and folio property must agree; protect idempotency and posting semantics. |
+| `folio_item_windows` | Property child/link of folio item and folio window | Both relationship paths must resolve to the same folio/property. |\n| `folio_item_routing` | Property child/link of folio item and window | Routing target must belong to the same folio/property; verify idempotency and uniqueness semantics. |\n| `payments` | Property child of folio | Payment and folio property must agree; protect idempotency and posting semantics. |\n| `payment_refunds` | Property child of payment/folio | Refund must reference the original payment and matching folio/property; enforce refundable balance and authorization. |\n| `invoices` | Property child of folio | Invoice and folio must share property; confirm numbering and lifecycle/immutability rules. |
 | `deposit_transactions` | Property child of stay, optionally folio | Stay, folio, and actor must be consistent within the property. |
 | `financial_transactions` | Property-owned financial root | `property_id` is authoritative; referenced folio/reservation must match it. Preserve idempotency and reversal invariants. |
 | `ledger_entries` | Property child of financial transaction | Property is inherited through transaction; optional folio/stay references must match that property. Ledger rows should not be silently edited after posting. |
@@ -85,9 +85,9 @@ The current model contains more than the core front-desk tables. The following i
 | `stock_movements` | Property child of stock item | Business date and creator are checked against the stock item's property. |
 | `suppliers` | Property-owned root under current ownership migration | Organization-wide supplier sharing is a possible future feature, but must be explicit. |
 | `purchase_orders` | Property-owned root | Supplier, creator, business date, and related receipts must stay within the property. |
-| `purchase_order_items` | Property child of purchase order | Stock item and order must have the same property. |
-| `purchase_receipts` | Property child of purchase order | Receipt property is inherited from its purchase order; received stock item references must match. |
-| `purchase_receipt_items` | Property child of receipt/order | All order, receipt, and stock item links must resolve to the same property. |
+| `purchase_order_lines` | Property child of purchase order | Stock item and order must have the same property. This is the current Core table name. |
+| `goods_receipts` | Property child of purchase order | Receipt property is inherited from its purchase order; received stock item references must match. This is the current Core/migration table name. |
+| `goods_receipt_lines` | Property child of receipt/order | All order, receipt, and stock item links must resolve to the same property. This is the current Core/migration table name. |
 | `stock_operations` | Property child of stock item | Validate operation references and business date using the stock item's property. |
 
 ### Housekeeping and maintenance
@@ -95,13 +95,13 @@ The current model contains more than the core front-desk tables. The following i
 | Table | Proposed ownership | Notes / review requirement |
 |---|---|---|
 | `housekeeping_tasks` | Property child of room | Room determines property; assignment and creator must be authorized for that property. |
-| `maintenance_requests` | Property child of room/property | Room/property consistency must be enforced; no cross-property room references. |
+| `maintenance_blocks` | Property child of room | Room determines property; reporting/resolving users must be authorized; business date must match property state. |
 | `room_inspections` (if present in deployed schema) | Property child of room/task | Confirm exact table name and migration origin during full migration inventory. |
 | `maintenance/task history tables` (if present) | Child of the authoritative task/request | Confirm exact table names from migrations before creating constraints. |
 
-The last two entries are inventory checks, not a claim that those exact tables exist in the current schema.
+The `room_inspections` and maintenance/task history entries are inventory checks, not a claim that those exact tables exist in the current schema.
 
-## 4. Important gaps and design decisions
+## 4. Naming and schema-source cautions\n\n- The purchasing Core tables are `purchase_order_lines`, `goods_receipts`, and `goods_receipt_lines`—not `purchase_order_items`, `purchase_receipts`, or `purchase_receipt_items`. Keep documentation and future constraints aligned with the actual declarations.\n- The current ORM model uses `folio_windows`, while revision `0005_stay_folio_windows` and legacy SQL refer to `stay_folio_windows`. Do not assume these are interchangeable or rename/drop either table without testing fresh Alembic-only installs, metadata-bootstrap installs, and supported upgrades.\n- Schema behavior is spread across Alembic, SQLAlchemy metadata declarations, legacy SQL, and SQLite runtime compatibility edits. Source-level inventory must include all of these paths.\n\n## 5. Important gaps and design decisions
 
 1. **Ownership columns are not enough by themselves.** A table with `property_id` can still reference a room, guest, folio, supplier, or reservation from another property unless the database constraints and application checks prevent it.
 2. **Global uniqueness can break multi-property SaaS.** Review globally unique room numbers, room type names, guest/contact values, expense numbers, SKUs, menu names, and supplier identifiers. Scope uniqueness to the owning property or organization where appropriate, while retaining global uniqueness for truly global identity/slug fields.
@@ -112,7 +112,7 @@ The last two entries are inventory checks, not a claim that those exact tables e
 7. **Historical finance is immutable by design.** Tax/service-charge/rate changes must not recalculate already-posted transactions. Cross-tenant access controls must cover reports, exports, backups, and asynchronous jobs as well as CRUD endpoints.
 8. **Database parity matters.** Constraints and behavior need tests on SQLite and PostgreSQL where both are supported. PostgreSQL-only triggers must not be mistaken for portable enforcement.
 
-## 5. Migration history observed
+## 6. Migration history observed
 
 - `0020_multi_tenant_foundation` creates organization/property tenancy foundations.
 - `0021_property_ownership` already attempts to add `property_id` to its declared root/state table lists. It intentionally aborts if legacy operational rows exist rather than guessing their tenant.
@@ -121,7 +121,7 @@ The last two entries are inventory checks, not a claim that those exact tables e
 
 Therefore, the next task is **not** to blindly create another ownership migration. First reconcile the full database inventory with these existing revisions, confirm exact migration heads and deployed-schema assumptions, and identify unprotected relationships.
 
-## 6. Required review before implementation
+## 7. Required review before implementation
 
 - [ ] Inventory every `op.create_table`, SQLAlchemy table, bootstrap-created table, and raw SQL-created table.
 - [ ] For every table, record owner, parent path, tenant key (direct or inherited), foreign keys, unique constraints, indexes, and write endpoints.
@@ -133,6 +133,6 @@ Therefore, the next task is **not** to blindly create another ownership migratio
 - [ ] Review the design and diff before proposing any migration.
 - [ ] Only after approval, prepare a separate migration proposal with safe backfill/abort behavior and SQLite/PostgreSQL tests.
 
-## 7. Explicit non-goals
+## 8. Explicit non-goals
 
 This document does not create migration 0024, change application code, assign legacy records to a tenant, provision cloud resources, connect to a database, or touch production data. Those steps require separate review and, for any production data operation, explicit approval.
