@@ -37,29 +37,32 @@ def main() -> None:
         with psycopg.connect(source_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO organizations (name, slug) VALUES (%s, %s) RETURNING id",
-                    ("Backup Roundtrip Org", "backup-roundtrip-org"),
+                    "INSERT INTO organizations (name, slug, status, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id",
+                    ("Backup Roundtrip Org", "backup-roundtrip-org", "active"),
                 )
                 organization_id = cur.fetchone()[0]
                 cur.execute(
-                    "INSERT INTO properties (organization_id, name, code, slug) "
-                    "VALUES (%s, %s, %s, %s) RETURNING id",
-                    (organization_id, "Backup Roundtrip Hotel", "BKR", "backup-roundtrip-hotel"),
+                    "INSERT INTO properties (organization_id, name, code, slug, status, timezone, currency, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id",
+                    (organization_id, "Backup Roundtrip Hotel", "BKR", "backup-roundtrip-hotel", "active", "Asia/Karachi", "PKR"),
                 )
                 property_id = cur.fetchone()[0]
                 cur.execute(
-                    "INSERT INTO organization_settings (organization_id, setting_key, setting_value) "
-                    "VALUES (%s, %s, %s)",
+                    "INSERT INTO organization_settings (organization_id, setting_key, setting_value, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     (organization_id, "default_language", "ur"),
                 )
                 cur.execute(
-                    "INSERT INTO property_settings (property_id, setting_key, setting_value) "
-                    "VALUES (%s, %s, %s), (%s, %s, %s)",
+                    "INSERT INTO property_settings (property_id, setting_key, setting_value, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+                    "(%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     (property_id, "language", "en", property_id, "currency", "USD"),
                 )
                 cur.execute(
-                    "INSERT INTO property_branding (property_id, display_name, primary_color) "
-                    "VALUES (%s, %s, %s)",
+                    "INSERT INTO property_branding "
+                    "(property_id, display_name, primary_color, show_logo_on_documents, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     (property_id, "Backup Roundtrip Brand", "#123ABC"),
                 )
             conn.commit()
