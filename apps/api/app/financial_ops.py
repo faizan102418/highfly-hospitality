@@ -345,8 +345,6 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
     if payload.get("folio_id") is not None:
         folio_query = folio_query.where(Folio.id == payload.get("folio_id"))
     folio = db.scalar(folio_query.order_by(Folio.id))
-    if transaction_type == "applied" and (folio is None or folio.status != "open"):
-        raise HTTPException(status_code=409, detail="Deposit application requires an open folio for the stay's reservation")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if transaction_type in {"applied", "refunded"} and not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for deposit application/refund")
     if key:
@@ -369,6 +367,8 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
             if transaction_type == "applied" and existing_payment is None:
                 raise HTTPException(status_code=409, detail="Idempotent deposit application is missing its folio payment record")
             return {"id": existing_deposit.id, "stay_id": stay.id, "transaction_type": existing_deposit.transaction_type, "amount": existing_deposit.amount, "payment_id": existing_payment.id if existing_payment else None, "reference": existing_deposit.reference, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
+    if transaction_type == "applied" and (folio is None or folio.status != "open"):
+        raise HTTPException(status_code=409, detail="Deposit application requires an open folio for the stay's reservation")
     reservation = db.get(Reservation, stay.reservation_id); current = stay_deposit_ledger_balance(db, stay.id); signed = amount if transaction_type in {"received", "adjusted"} else -amount; new_balance = money(current + signed)
     if new_balance < 0: raise HTTPException(status_code=409, detail="Deposit transaction exceeds available deposit balance")
     required_deposit = money(stay.agreed_rate * max(0, (stay.check_out - stay.check_in).days))
