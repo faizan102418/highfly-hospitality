@@ -118,5 +118,45 @@ class TenancyFoundationTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 403)
 
 
+    def test_inactive_property_cannot_be_resolved(self):
+        suffix = uuid4().hex[:10]
+        with Session(self.engine) as db:
+            role = Role(name=f"admin-{suffix}")
+            db.add(role)
+            db.flush()
+            user = User(
+                username=f"inactive-property-user-{suffix}",
+                password_hash="test",
+                role_id=role.id,
+            )
+            org = Organization(
+                name=f"Active organization {suffix}",
+                slug=f"active-org-{suffix}",
+            )
+            db.add_all([user, org])
+            db.flush()
+            property_ = Property(
+                organization_id=org.id,
+                name=f"Inactive property {suffix}",
+                code=f"IP-{suffix}",
+                slug=f"inactive-property-{suffix}",
+                status="inactive",
+            )
+            db.add(property_)
+            db.flush()
+            db.add(PropertyUserAccess(
+                user_id=user.id,
+                property_id=property_.id,
+                access_scope="property",
+                is_primary=True,
+            ))
+            db.commit()
+
+            # Membership alone must not grant access after a property is disabled.
+            with self.assertRaises(HTTPException) as raised:
+                resolve_authorized_property(db, user.id, property_.id)
+            self.assertEqual(raised.exception.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
