@@ -23,6 +23,7 @@ from .db import DATA_DIR, get_db
 from .financial_ops import ledger_reconciliation
 from .finance_controls import payment_reconciliation, revenue_report, trial_balance
 from .financial_authority import folio_ledger_summary, post_folio_charge_authoritative, stay_deposit_balance
+from .financial_configuration import effective_service_charge_rate
 from .folio_integrity import item_has_active_charge
 from .models import AuditLog, BusinessDateState, Expense, FinancialTransaction, Folio, FolioItem, LedgerEntry, Payment, Reservation, Room, User
 from .business_date import get_current_business_date, lock_current_business_date
@@ -31,7 +32,6 @@ from .room_charge_accrual import accrue_room_charges_for_business_date, preview_
 
 router = APIRouter(prefix="/night-audit", tags=["night-audit"])
 MONEY = Decimal("0.01")
-FOOD_SERVICE_CHARGE_RATE = Decimal("0.10")
 FOOD_CATEGORIES = {"food", "restaurant", "room_service", "beverage", "drink", "snack"}
 STAFF_SERVICE_CHARGE_ACCOUNT = "Staff Service Charges Payable"
 CASH_ACCOUNTS = {"Cash"}
@@ -199,7 +199,7 @@ def build_summary(db: Session, business_date: date, finance: dict | None = None,
         Expense.status == "posted",
     )) or Decimal("0.00")
 
-    service_charge = money(food_revenue * FOOD_SERVICE_CHARGE_RATE)
+    service_charge = money(food_revenue * effective_service_charge_rate(db, property_id))
     gross_revenue = money(room_revenue + food_revenue + other_revenue)
     paid_total = money(sum(payment_totals.values(), Decimal("0.00")))
     outstanding = money(sum(
