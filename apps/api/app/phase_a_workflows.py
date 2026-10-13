@@ -172,7 +172,6 @@ def add_occupant_internal(
     return occupant
 
 
-@router.post("/stays/{stay_id}/occupants", status_code=201)
 def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     stay = stay_or_404(db, stay_id, user.id)
     occupant = add_occupant_internal(db, stay, payload, user.id)
@@ -180,7 +179,6 @@ def add_stay_occupant(stay_id: int, payload: OccupantCreate, db: Session = Depen
     return {"id": occupant.id, "stay_id": occupant.stay_id, "guest_id": occupant.guest_id, "role": occupant.role, "is_primary": occupant.is_primary, "check_in": occupant.check_in, "check_out": occupant.check_out, "notes": occupant.notes}
 
 
-@router.get("/stays/{stay_id}/deposits")
 def list_stay_deposits(stay_id: int, db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "reception", "housekeeping"))):
     stay_or_404(db, stay_id, _.id)
     rows = db.scalars(select(DepositTransaction).where(DepositTransaction.stay_id == stay_id).order_by(DepositTransaction.id)).all()
@@ -190,7 +188,6 @@ def list_stay_deposits(stay_id: int, db: Session = Depends(get_db), _: User = De
     ]}
 
 
-@router.post("/stays/{stay_id}/deposits/receive", status_code=201)
 def receive_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     stay = stay_or_404(db, stay_id, user.id)
     transaction = DepositTransaction(
@@ -225,7 +222,6 @@ def receive_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends
     return {"id": transaction.id, "stay_id": stay.id, "balance": deposit_balance(db, stay.id)}
 
 
-@router.post("/stays/{stay_id}/deposits/refund", status_code=201)
 def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     stay = stay_or_404(db, stay_id, user.id)
     amount = payload.amount.quantize(MONEY)
@@ -264,7 +260,6 @@ def refund_deposit(stay_id: int, payload: DepositRequest, db: Session = Depends(
     return {"id": transaction.id, "stay_id": stay.id, "balance": deposit_balance(db, stay.id)}
 
 
-@router.post("/stays/{stay_id}/deposits/transfer", status_code=201)
 def transfer_deposit(stay_id: int, payload: DepositTransfer, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     source = stay_or_404(db, stay_id, user.id)
     target = stay_or_404(db, payload.target_stay_id, user.id)
@@ -288,7 +283,6 @@ def transfer_deposit(stay_id: int, payload: DepositTransfer, db: Session = Depen
     return {"source_stay_id": source.id, "target_stay_id": target.id, "transferred": amount, "source_balance": deposit_balance(db, source.id), "target_balance": deposit_balance(db, target.id)}
 
 
-@router.post("/stays/{stay_id}/deposits/apply", status_code=201)
 def apply_deposit(stay_id: int, payload: DepositApply, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     stay = stay_or_404(db, stay_id, user.id)
     folio_id = db.scalar(select(Folio.id).where(Folio.reservation_id == stay.reservation_id).limit(1))
@@ -359,7 +353,6 @@ def move_checked_in_stay(stay_id: int, payload: MoveRoomRequest, db: Session = D
     return {"stay_id": stay.id, "from_room_id": source.id, "to_room_id": target.id, "room_move_id": move.id, "status": stay.status}
 
 
-@router.post("/reservations/{reservation_id}/split", status_code=201)
 def split_reservation(reservation_id: int, payload: ReservationSplitRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     source = db.get(Reservation, reservation_id)
     if not source:
