@@ -127,11 +127,11 @@ def stay_folio_id(db: Session, stay_id: int) -> int:
 
 @router.get("/stays/{stay_id}/lifecycle")
 def get_stay_lifecycle(stay_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
-    stay, _reservation = authorized_stay(db, stay_id, user.id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     occupants = db.execute(
         select(StayOccupant, Guest.full_name)
         .join(Guest, Guest.id == StayOccupant.guest_id)
-        .where(StayOccupant.stay_id == stay.id)
+        .where(StayOccupant.stay_id == stay.id, Guest.property_id == reservation.property_id)
         .order_by(StayOccupant.is_primary.desc(), StayOccupant.id)
     ).all()
     windows = db.scalars(select(StayFolioWindow).where(StayFolioWindow.stay_id == stay.id).order_by(StayFolioWindow.id)).all()
@@ -171,10 +171,13 @@ def update_stay_dates(stay_id: int, payload: StayDatesUpdate, db: Session = Depe
 
 @router.patch("/stays/{stay_id}/occupants/{occupant_id}")
 def update_stay_occupant(stay_id: int, occupant_id: int, payload: OccupantUpdate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay, _reservation = authorized_stay(db, stay_id, user.id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     occupant = db.scalar(select(StayOccupant).where(StayOccupant.id == occupant_id, StayOccupant.stay_id == stay_id))
     if not occupant:
         raise HTTPException(status_code=404, detail="Stay occupant not found")
+    guest = db.get(Guest, occupant.guest_id)
+    if guest is None or guest.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Stay occupant guest belongs to a different property")
     check_in = payload.check_in or occupant.check_in or stay.check_in
     check_out = payload.check_out or occupant.check_out or stay.check_out
     if check_out <= check_in or check_in < stay.check_in or check_out > stay.check_out:
@@ -196,10 +199,13 @@ def update_stay_occupant(stay_id: int, occupant_id: int, payload: OccupantUpdate
 
 @router.delete("/stays/{stay_id}/occupants/{occupant_id}")
 def remove_stay_occupant(stay_id: int, occupant_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay, _reservation = authorized_stay(db, stay_id, user.id)
+    stay, reservation = authorized_stay(db, stay_id, user.id)
     occupant = db.scalar(select(StayOccupant).where(StayOccupant.id == occupant_id, StayOccupant.stay_id == stay_id))
     if not occupant:
         raise HTTPException(status_code=404, detail="Stay occupant not found")
+    guest = db.get(Guest, occupant.guest_id)
+    if guest is None or guest.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Stay occupant guest belongs to a different property")
     occupants = db.scalars(select(StayOccupant).where(StayOccupant.stay_id == stay_id).order_by(StayOccupant.id)).all()
     if occupant.is_primary and len(occupants) == 1:
         raise HTTPException(status_code=409, detail="A stay must retain at least one occupant")
