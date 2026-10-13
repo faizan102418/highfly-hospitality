@@ -21,8 +21,7 @@ MONEY = Decimal("0.01")
 class BookingGroup(Base):
     __tablename__ = "booking_groups"
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Nullable only for legacy groups that cannot be safely backfilled. Such groups fail closed.
-    property_id: Mapped[int | None] = mapped_column(ForeignKey("properties.id"), nullable=True, index=True)
+    property_id: Mapped[int] = mapped_column(ForeignKey("properties.id"), nullable=False, index=True)
     code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(160))
     group_type: Mapped[str] = mapped_column(String(40), default="group")
