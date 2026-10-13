@@ -13,15 +13,21 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("booking_groups", sa.Column("property_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_booking_groups_property_id_properties",
-        "booking_groups",
-        "properties",
-        ["property_id"],
-        ["id"],
+    bind = op.get_bind()
+    column = sa.Column(
+        "property_id",
+        sa.Integer(),
+        sa.ForeignKey("properties.id", name="fk_booking_groups_property_id_properties"),
+        nullable=True,
     )
-    op.create_index("ix_booking_groups_property_id", "booking_groups", ["property_id"])
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("booking_groups", recreate="always") as batch_op:
+            batch_op.add_column(column)
+            batch_op.create_index("ix_booking_groups_property_id", ["property_id"])
+    else:
+        op.add_column("booking_groups", column)
+        op.create_index("ix_booking_groups_property_id", "booking_groups", ["property_id"])
+
     # Backfill only groups whose existing reservations all identify one property.
     # Empty and cross-property legacy groups remain NULL and are denied by the API.
     op.execute(sa.text("""
