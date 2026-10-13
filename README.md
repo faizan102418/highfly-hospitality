@@ -5,7 +5,7 @@ Offline-first Hotel Management System (PMS/HMS) for La Serene Hotel.
 ## Phase 1 — Core PMS foundation
 - FastAPI backend
 - React + TypeScript frontend
-- SQLite local database
+- SQLite for local development and PostgreSQL for cloud deployments
 - Live operations dashboard
 - JWT authentication with Argon2 password hashing
 - Role-based permissions for admin, reception and housekeeping
@@ -21,7 +21,7 @@ Offline-first Hotel Management System (PMS/HMS) for La Serene Hotel.
 - Billing, folios, payments and printable receipts
 - Dedicated housekeeping operations board
 - Audit logging for important operational mutations
-- Offline-first deployment target
+- Multi-tenant deployment model with explicit organization/property access
 
 ## Development
 
