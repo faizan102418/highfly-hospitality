@@ -185,7 +185,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
             self.db.scalar(
                 select(func.count()).select_from(Payment).where(
                     Payment.folio_id == self.folio.id,
-                    Payment.reference == "deposit-apply-001",
+                    Payment.reference == "APP-1",
                     Payment.method == "deposit",
                 )
             ),
