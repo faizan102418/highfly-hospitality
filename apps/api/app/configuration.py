@@ -26,6 +26,7 @@ from .tenancy import (
     PropertyBranding,
     PropertySetting,
     PropertyUserAccess,
+    resolve_authorized_property,
 )
 
 router = APIRouter(prefix="/api", tags=["configuration"])
@@ -109,6 +110,30 @@ def _require_property_access(db: Session, user: User, property_: Property) -> Pr
     if access is None:
         raise HTTPException(status_code=403, detail="No access to this property")
     return access
+
+
+
+def _effective_settings_response(db: Session, property_: Property) -> dict[str, Any]:
+    """Resolve settings only from the supplied property's organization and overrides."""
+    organization_rows = db.scalars(
+        select(OrganizationSetting).where(OrganizationSetting.organization_id == property_.organization_id)
+    ).all()
+    property_rows = db.scalars(
+        select(PropertySetting).where(PropertySetting.property_id == property_.id)
+    ).all()
+    organization_values = {row.setting_key: row.setting_value for row in organization_rows}
+    property_values = {row.setting_key: row.setting_value for row in property_rows}
+    resolved = resolve_effective_settings(organization_values, property_values)
+    return {
+        "property_id": property_.id,
+        **resolved,
+        "allowed_keys": sorted(resolved["settings"].keys()),
+        "inherited_from_organization": {
+            property_key: organization_values[organization_key]
+            for organization_key, property_key in ORG_TO_PROPERTY.items()
+            if organization_values.get(organization_key) is not None
+        },
+    }
 
 
 def _require_organization_access(db: Session, user: User, organization_id: int) -> None:
@@ -237,6 +262,17 @@ def update_organization_settings(
     return get_organization_settings(organization_id, db, user)
 
 
+
+@router.get("/settings/effective")
+def get_effective_settings_for_current_property(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return settings for the user's active primary property without trusting client-supplied tenant IDs."""
+    property_ = resolve_authorized_property(db, user.id)
+    return _effective_settings_response(db, property_)
+
+
 @router.get("/properties/{property_id}/settings")
 def get_property_settings(
     property_id: int,
@@ -247,25 +283,7 @@ def get_property_settings(
     if property_ is None:
         raise HTTPException(status_code=404, detail="Property not found")
     _require_property_access(db, user, property_)
-    organization_rows = db.scalars(
-        select(OrganizationSetting).where(OrganizationSetting.organization_id == property_.organization_id)
-    ).all()
-    property_rows = db.scalars(
-        select(PropertySetting).where(PropertySetting.property_id == property_id)
-    ).all()
-    organization_values = {row.setting_key: row.setting_value for row in organization_rows}
-    property_values = {row.setting_key: row.setting_value for row in property_rows}
-    resolved = resolve_effective_settings(organization_values, property_values)
-    return {
-        "property_id": property_id,
-        **resolved,
-        "allowed_keys": sorted(resolved["settings"].keys()),
-        "inherited_from_organization": {
-            property_key: organization_values[organization_key]
-            for organization_key, property_key in ORG_TO_PROPERTY.items()
-            if organization_values.get(organization_key) is not None
-        },
-    }
+    return _effective_settings_response(db, property_)
 
 
 @router.put("/properties/{property_id}/settings")
