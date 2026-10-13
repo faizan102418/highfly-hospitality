@@ -48,6 +48,14 @@ def main() -> None:
                     (organization_id, "Backup Roundtrip Hotel", "BKR", "backup-roundtrip-hotel", "active", "Asia/Karachi", "PKR"),
                 )
                 property_id = cur.fetchone()[0]
+                # Every property must have a business-date state for backup
+                # verification; otherwise the recovery verifier correctly rejects it.
+                cur.execute(
+                    "INSERT INTO business_date_state "
+                    "(property_id, current_business_date, opened_at, updated_at) "
+                    "VALUES (%s, CURRENT_DATE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    (property_id,),
+                )
                 cur.execute(
                     "INSERT INTO organization_settings (organization_id, setting_key, setting_value, created_at, updated_at) "
                     "VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
