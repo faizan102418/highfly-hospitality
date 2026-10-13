@@ -27,7 +27,7 @@ class FinancialConfigurationTests(unittest.TestCase):
         self.db.close()
 
     def test_platform_default_is_used_when_no_financial_setting_exists(self):
-        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), 0)
+        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), Decimal("0.10"))
 
     def test_organization_service_charge_default_is_used(self):
         self.db.add(OrganizationSetting(
@@ -36,7 +36,7 @@ class FinancialConfigurationTests(unittest.TestCase):
             setting_value="12.5",
         ))
         self.db.flush()
-        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), 0.125)
+        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), Decimal("0.125"))
 
     def test_property_override_wins_and_null_falls_back_to_organization(self):
         self.db.add(OrganizationSetting(
@@ -50,7 +50,7 @@ class FinancialConfigurationTests(unittest.TestCase):
             setting_value="7.5",
         ))
         self.db.flush()
-        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), 0.075)
+        self.assertEqual(effective_service_charge_rate(self.db, self.property.id), Decimal("0.075"))
 
         override = self.db.query(PropertySetting).filter_by(
             property_id=self.property.id, setting_key="service_charge_percent"
@@ -87,8 +87,8 @@ class FinancialConfigurationTests(unittest.TestCase):
             ),
         ])
         self.db.flush()
-        self.assertEqual(effective_service_charge_rate(self.db, first.id), 0.10)
-        self.assertEqual(effective_service_charge_rate(self.db, second.id), 0.04)
+        self.assertEqual(effective_service_charge_rate(self.db, first.id), Decimal("0.10"))
+        self.assertEqual(effective_service_charge_rate(self.db, second.id), Decimal("0.04"))
 
 
 if __name__ == "__main__":
