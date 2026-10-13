@@ -253,7 +253,9 @@ def list_deposits(stay_id: int, db: Session = Depends(get_db), user: User = Depe
     return {"balance": money(balance), "transactions": result}
 
 
-@router.post("/stays/{stay_id}/deposits", status_code=201)
+# Kept as a direct-call compatibility helper for older tests. The URL is
+# intentionally not registered: financial_ops.create_deposit_with_ledger is
+# the sole POST /stays/{stay_id}/deposits handler and posts balanced ledger rows.
 def create_deposit(stay_id: int, payload: DepositCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     stay, _reservation = authorized_stay_or_404(db, stay_id, user.id)
     current = Decimal("0.00")
