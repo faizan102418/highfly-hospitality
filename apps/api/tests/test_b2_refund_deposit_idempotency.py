@@ -167,6 +167,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
             self.db,
             self.user,
         )
+        self.folio.status = "closed"
         replay = create_deposit_with_ledger(
             self.stay.id,
             {"transaction_type": "applied", "amount": Decimal("40.00"), "reference": "APP-1"},
