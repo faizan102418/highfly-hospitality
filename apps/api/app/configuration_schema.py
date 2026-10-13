@@ -48,14 +48,14 @@ def _enum(value: str, choices: set[str], key: str) -> str:
 
 
 def _time(value: str, key: str) -> str:
-    if not re.fullmatch(r"(?:[01]\\d|2[0-3]):[0-5]\\d", value.strip()):
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value.strip()):
         raise ValueError(f"{key} must use 24-hour HH:MM format")
     return value.strip()
 
 
 def _integer(value: str, key: str, minimum: int, maximum: int) -> str:
     raw = value.strip()
-    if not re.fullmatch(r"\\d+", raw):
+    if not re.fullmatch(r"\d+", raw):
         raise ValueError(f"{key} must be an integer")
     parsed = int(raw)
     if not minimum <= parsed <= maximum:
