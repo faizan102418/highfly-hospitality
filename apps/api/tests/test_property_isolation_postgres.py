@@ -22,7 +22,7 @@ from app.schemas import FolioItemCreate, FolioItemUpdate, PaymentCreate
 from app.models import FolioItem
 from datetime import date
 from app.tenancy import Organization, Property, PropertyUserAccess, resolve_authorized_property
-from app.pms_core import Stay
+from app.pms_core import BookingGroup, GroupReservation, Stay, get_group, list_groups, link_reservation_to_group
 from app.phase_a_workflows import stay_or_404 as workflow_stay_or_404
 from app.phase_a_completion import stay_or_404 as completion_stay_or_404
 from app.reservation_workflows import (
@@ -220,6 +220,62 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
                 )
             self.assertEqual(create_denied.exception.status_code, 409)
 
+            db.rollback()
+
+
+    def test_booking_groups_are_property_scoped_and_links_cannot_cross_properties(self):
+        suffix = uuid4().hex[:12]
+        with Session(engine) as db:
+            allowed_property = ensure_test_property(db)
+            organization = Organization(name=f"Group Isolation Org {suffix}", slug=f"group-isolation-org-{suffix}")
+            db.add(organization)
+            db.flush()
+            other_property = Property(
+                organization_id=organization.id,
+                name=f"Group Isolation Property {suffix}",
+                code=f"GRP-{suffix[:6]}",
+                slug=f"group-isolation-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(other_property)
+            role = db.scalar(select(Role).where(Role.name == "admin"))
+            if role is None:
+                role = Role(name="admin")
+                db.add(role)
+                db.flush()
+            user = User(username=f"group-isolation-{suffix}", password_hash="test", role_id=role.id)
+            db.add(user)
+            db.flush()
+            db.add(PropertyUserAccess(user_id=user.id, property_id=allowed_property.id, access_scope="property", is_primary=True))
+            allowed_guest = Guest(property_id=allowed_property.id, full_name=f"Allowed group guest {suffix}")
+            foreign_guest = Guest(property_id=other_property.id, full_name=f"Foreign group guest {suffix}")
+            db.add_all([allowed_guest, foreign_guest])
+            db.flush()
+            allowed_reservation = Reservation(property_id=allowed_property.id, guest_id=allowed_guest.id, check_in=date(2026, 10, 1), check_out=date(2026, 10, 2), status="reserved")
+            foreign_reservation = Reservation(property_id=other_property.id, guest_id=foreign_guest.id, check_in=date(2026, 10, 1), check_out=date(2026, 10, 2), status="reserved")
+            db.add_all([allowed_reservation, foreign_reservation])
+            db.flush()
+            allowed_group = BookingGroup(property_id=allowed_property.id, code=f"AG-{suffix}", name=f"Allowed group {suffix}")
+            foreign_group = BookingGroup(property_id=other_property.id, code=f"FG-{suffix}", name=f"Foreign group {suffix}")
+            db.add_all([allowed_group, foreign_group])
+            db.flush()
+            db.add(GroupReservation(group_id=foreign_group.id, reservation_id=foreign_reservation.id, role="member"))
+            db.flush()
+
+            visible_groups = list_groups(db, user)
+            self.assertEqual({group.id for group in visible_groups}, {allowed_group.id})
+            with self.assertRaises(HTTPException) as get_denied:
+                get_group(foreign_group.id, db, user)
+            self.assertEqual(get_denied.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as foreign_link_denied:
+                link_reservation_to_group(allowed_group.id, type("Link", (), {"reservation_id": foreign_reservation.id, "role": "member", "notes": None})(), db, user)
+            self.assertEqual(foreign_link_denied.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as foreign_group_link_denied:
+                link_reservation_to_group(foreign_group.id, type("Link", (), {"reservation_id": allowed_reservation.id, "role": "member", "notes": None})(), db, user)
+            self.assertEqual(foreign_group_link_denied.exception.status_code, 403)
             db.rollback()
 
 
