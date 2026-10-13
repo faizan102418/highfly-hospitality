@@ -362,6 +362,7 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
                 or existing_deposit.transaction_type != transaction_type
                 or existing_deposit.payment_method != expected_method
                 or existing_deposit.notes != payload.get("notes")
+                or existing_deposit.reference != (payload.get("reference") or key)
                 or (transaction_type == "applied" and existing_deposit.folio_id != folio.id)
             ): raise HTTPException(status_code=409, detail="Idempotency key is already bound to different deposit parameters")
             existing_payment = db.scalar(select(Payment).where(Payment.folio_id == existing_deposit.folio_id, Payment.reference == existing_deposit.reference, Payment.method == "deposit")) if transaction_type == "applied" else None
@@ -375,7 +376,7 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
         raise HTTPException(status_code=409, detail=f"Deposit received exceeds the stay's current required deposit of {required_deposit}")
     if transaction_type == "received" and stay.deposit_required != required_deposit:
         stay.deposit_required = required_deposit
-    deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id if folio else None, transaction_type=transaction_type, amount=amount, payment_method="deposit" if transaction_type == "applied" else payload.get("payment_method"), reference=key or payload.get("reference"), notes=payload.get("notes"), created_by=user.id); db.add(deposit); db.flush()
+    deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id if folio else None, transaction_type=transaction_type, amount=amount, payment_method="deposit" if transaction_type == "applied" else payload.get("payment_method"), reference=payload.get("reference") or key, notes=payload.get("notes"), created_by=user.id); db.add(deposit); db.flush()
     payment = None
     if transaction_type == "applied":
         payment = Payment(folio_id=folio.id, amount=amount, method="deposit", reference=deposit.reference)
