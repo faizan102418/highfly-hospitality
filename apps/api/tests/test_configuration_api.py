@@ -158,5 +158,62 @@ class ConfigurationValidationTests(unittest.TestCase):
             self.assertEqual(json.loads(org_audit.details)["keys"], ["default_check_in_time", "default_language", "default_tax_rate_percent"])
 
 
+    def test_property_settings_and_branding_are_isolated_within_one_organization(self):
+        with Session(self.engine) as db:
+            role = Role(name="configuration-isolation-admin")
+            db.add(role)
+            db.flush()
+            user = User(username="configuration-isolation-user", password_hash="test", role_id=role.id)
+            org = Organization(name="Isolation Org", slug="configuration-isolation-org")
+            db.add_all([user, org])
+            db.flush()
+            property_a = Property(organization_id=org.id, name="Hotel A", code="ISO-A", slug="isolation-a")
+            property_b = Property(organization_id=org.id, name="Hotel B", code="ISO-B", slug="isolation-b")
+            db.add_all([property_a, property_b])
+            db.flush()
+            db.add_all([
+                PropertyUserAccess(user_id=user.id, property_id=property_a.id, access_scope="organization", is_primary=True),
+                PropertyUserAccess(user_id=user.id, property_id=property_b.id, access_scope="organization"),
+            ])
+            db.commit()
+
+            update_organization_settings(
+                org.id,
+                SettingsUpdate(settings={"default_language": "ur", "default_check_in_time": "15:00"}),
+                db,
+                user,
+            )
+            update_property_settings(
+                property_a.id,
+                SettingsUpdate(settings={"language": "en", "currency": "USD"}),
+                db,
+                user,
+            )
+            update_property_branding(
+                property_a.id,
+                BrandingUpdate(display_name="Hotel A Custom", primary_color="#112233"),
+                db,
+                user,
+            )
+
+            settings_a = get_property_settings(property_a.id, db, user)
+            settings_b = get_property_settings(property_b.id, db, user)
+            branding_a = get_property_branding(property_a.id, db, user)
+            branding_b = get_property_branding(property_b.id, db, user)
+
+            self.assertEqual(settings_a["settings"]["language"], "en")
+            self.assertEqual(settings_a["sources"]["language"], "property")
+            self.assertEqual(settings_b["settings"]["language"], "ur")
+            self.assertEqual(settings_b["sources"]["language"], "organization")
+            self.assertEqual(settings_b["settings"]["currency"], "PKR")
+            self.assertEqual(settings_b["sources"]["currency"], "platform")
+            self.assertEqual(settings_a["settings"]["check_in_time"], "15:00")
+            self.assertEqual(settings_b["settings"]["check_in_time"], "15:00")
+            self.assertEqual(branding_a.display_name, "Hotel A Custom")
+            self.assertEqual(branding_a.primary_color, "#112233")
+            self.assertEqual(branding_b.display_name, "Hotel B")
+            self.assertIsNone(branding_b.primary_color)
+
+
 if __name__ == "__main__":
     unittest.main()
