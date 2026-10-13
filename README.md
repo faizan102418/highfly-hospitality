@@ -1,6 +1,6 @@
-# La Serene HMS
+# HighFly Hospitality
 
-Offline-first Hotel Management System (PMS/HMS) for La Serene Hotel.
+Cloud-first, multi-tenant hotel property management system (PMS). La Serene is a reference property, not a hard-coded tenant; each organization and property must have explicit configuration and access boundaries. The application supports local development, while deployed environments use the configured database and tenant model.
 
 ## Phase 1 — Core PMS foundation
 - FastAPI backend
