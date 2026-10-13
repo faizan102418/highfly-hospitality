@@ -75,6 +75,12 @@ class PhaseACompletionTests(unittest.TestCase):
         seed_deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id)
         self.db.add(seed_deposit)
         self.db.flush()
+        business_date_state = self.db.get(BusinessDateState, 1)
+        if business_date_state is None:
+            self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
+        else:
+            business_date_state.current_business_date = date(2026, 9, 8)
+            business_date_state.last_closed_at = None
         post_deposit_received(
             self.db,
             stay_id=stay.id,
@@ -85,12 +91,6 @@ class PhaseACompletionTests(unittest.TestCase):
             method="cash",
             created_by=self.user.id,
         )
-        business_date_state = self.db.get(BusinessDateState, 1)
-        if business_date_state is None:
-            self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
-        else:
-            business_date_state.current_business_date = date(2026, 9, 8)
-            business_date_state.last_closed_at = None
         self.db.commit()
         self.db.expire_all()
         self.reservation = self.db.get(Reservation, reservation.id)
