@@ -11,7 +11,7 @@ from app.db import Base
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.main import app
-from app.models import BusinessDateState, DepositTransaction, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomMove, RoomType, StayOccupant, StayRateSegment, User
+from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Role, Room, RoomMove, RoomType, StayOccupant, StayRateSegment, User
 from app.phase_a_workflows import (
     DepositApply,
     DepositRequest,
@@ -123,6 +123,151 @@ class PhaseAWorkflowTests(unittest.TestCase):
             refund_deposit(stay.id, DepositRequest(amount=Decimal("2001"), payment_method="cash"), self.db, self.user)
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(self.db.query(DepositTransaction).count(), 3)
+
+    def ledger_totals(self, transaction_id):
+        entries = self.db.scalars(select(LedgerEntry).where(LedgerEntry.transaction_id == transaction_id)).all()
+        debits = sum((Decimal(entry.amount) for entry in entries if entry.direction == "debit"), Decimal("0.00"))
+        credits = sum((Decimal(entry.amount) for entry in entries if entry.direction == "credit"), Decimal("0.00"))
+        return entries, debits, credits
+
+    def assert_deposit_ledger_balanced(self, transaction_type, amount, stay_id):
+        transactions = self.db.scalars(
+            select(FinancialTransaction).where(FinancialTransaction.transaction_type == transaction_type)
+        ).all()
+        self.assertTrue(transactions, f"expected {transaction_type} financial transaction")
+        financial = transactions[-1]
+        entries, debits, credits = self.ledger_totals(financial.id)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(debits, Decimal(amount))
+        self.assertEqual(credits, Decimal(amount))
+        self.assertEqual(debits, credits)
+        self.assertTrue(all(entry.stay_id == stay_id for entry in entries))
+        return entries
+
+    def test_deposit_lifecycle_posts_balanced_ledger_and_folio_payment(self):
+        reservation = self.make_reservation()
+        stay = self.make_stay(reservation, self.room1)
+
+        received = receive_deposit(
+            stay.id, DepositRequest(amount=Decimal("5000"), payment_method="cash", reference="DEP-LEDGER-1"), self.db, self.user
+        )
+        received_entries = self.assert_deposit_ledger_balanced("deposit_received", "5000.00", stay.id)
+        self.assertEqual({(e.account, e.direction) for e in received_entries}, {
+            ("Cash", "debit"), ("Guest Deposits", "credit")
+        })
+
+        applied = apply_deposit(stay.id, DepositApply(amount=Decimal("2000")), self.db, self.user)
+        applied_entries = self.assert_deposit_ledger_balanced("deposit_applied", "2000.00", stay.id)
+        self.assertEqual({(e.account, e.direction) for e in applied_entries}, {
+            ("Guest Deposits", "debit"), ("Guest Receivables", "credit")
+        })
+        payment = self.db.get(Payment, applied["payment_id"])
+        self.assertIsNotNone(payment)
+        self.assertEqual(payment.folio_id, applied["folio_id"])
+        self.assertEqual(payment.amount, Decimal("2000.00"))
+        self.assertEqual(payment.method, "deposit")
+        self.assertEqual(payment.reference, f"DEPOSIT-{applied['id']}")
+
+        refunded = refund_deposit(
+            stay.id, DepositRequest(amount=Decimal("1000"), payment_method="cash", reference="DEP-REFUND-1"), self.db, self.user
+        )
+        refunded_entries = self.assert_deposit_ledger_balanced("deposit_refund", "1000.00", stay.id)
+        self.assertEqual({(e.account, e.direction) for e in refunded_entries}, {
+            ("Guest Deposits", "debit"), ("Cash", "credit")
+        })
+        self.assertEqual(received["balance"], Decimal("5000.00"))
+        self.assertEqual(applied["balance"], Decimal("3000.00"))
+        self.assertEqual(refunded["balance"], Decimal("2000.00"))
+        self.assertEqual(self.db.query(AuditLog).filter(AuditLog.action.in_([
+            "deposit_receive", "deposit_apply", "deposit_refund"
+        ])).count(), 3)
+
+    def test_deposit_ledger_failure_rolls_back_deposit_payment_and_audit(self):
+        from unittest.mock import patch
+
+        reservation = self.make_reservation()
+        stay = self.make_stay(reservation, self.room1)
+        before = {
+            "deposits": self.db.query(DepositTransaction).count(),
+            "financial": self.db.query(FinancialTransaction).count(),
+            "ledger": self.db.query(LedgerEntry).count(),
+            "payments": self.db.query(Payment).count(),
+            "audit": self.db.query(AuditLog).count(),
+        }
+        with patch("app.phase_a_workflows.post_transaction", side_effect=RuntimeError("simulated ledger failure")):
+            with self.assertRaises(RuntimeError):
+                receive_deposit(
+                    stay.id, DepositRequest(amount=Decimal("1750"), payment_method="cash", reference="ROLLBACK-DEP"), self.db, self.user
+                )
+        self.db.rollback()
+        self.assertEqual(self.db.query(DepositTransaction).count(), before["deposits"])
+        self.assertEqual(self.db.query(FinancialTransaction).count(), before["financial"])
+        self.assertEqual(self.db.query(LedgerEntry).count(), before["ledger"])
+        self.assertEqual(self.db.query(Payment).count(), before["payments"])
+        self.assertEqual(self.db.query(AuditLog).count(), before["audit"])
+
+    def test_deposit_endpoints_deny_other_property_without_writes(self):
+        other_property = self.make_other_property()
+        other_guest = Guest(property_id=other_property.id, full_name="Other Booking Guest")
+        other_type = RoomType(property_id=other_property.id, name="Other Deposit Type", base_rate=12000)
+        self.db.add_all([other_guest, other_type])
+        self.db.flush()
+        other_room = Room(property_id=other_property.id, number="OTHER-DEP-101", room_type_id=other_type.id, status="available")
+        self.db.add(other_room)
+        self.db.flush()
+        foreign_reservation = Reservation(
+            property_id=other_property.id, guest_id=other_guest.id, check_in=date(2026, 9, 8),
+            check_out=date(2026, 9, 13), status="reserved"
+        )
+        self.db.add(foreign_reservation)
+        self.db.flush()
+        self.db.add(Folio(reservation_id=foreign_reservation.id, status="open"))
+        self.db.flush()
+        foreign_stay = Stay(
+            reservation_id=foreign_reservation.id, room_id=other_room.id, guest_id=other_guest.id,
+            status="reserved", check_in=foreign_reservation.check_in, check_out=foreign_reservation.check_out,
+            agreed_rate=Decimal("12000.00")
+        )
+        self.db.add(foreign_stay)
+        self.db.commit()
+        before = (
+            self.db.query(DepositTransaction).count(), self.db.query(FinancialTransaction).count(),
+            self.db.query(LedgerEntry).count(), self.db.query(Payment).count(), self.db.query(AuditLog).count()
+        )
+        operations = (
+            lambda: receive_deposit(foreign_stay.id, DepositRequest(amount=Decimal("1000"), reference="FOREIGN"), self.db, self.user),
+            lambda: refund_deposit(foreign_stay.id, DepositRequest(amount=Decimal("1")), self.db, self.user),
+            lambda: apply_deposit(foreign_stay.id, DepositApply(amount=Decimal("1")), self.db, self.user),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation), self.assertRaises(HTTPException) as ctx:
+                operation()
+            self.assertIn(ctx.exception.status_code, (403, 404))
+            self.db.rollback()
+        after = (
+            self.db.query(DepositTransaction).count(), self.db.query(FinancialTransaction).count(),
+            self.db.query(LedgerEntry).count(), self.db.query(Payment).count(), self.db.query(AuditLog).count()
+        )
+        self.assertEqual(after, before)
+
+    def test_duplicate_full_balance_application_is_rejected_without_extra_postings(self):
+        reservation = self.make_reservation()
+        stay = self.make_stay(reservation, self.room1)
+        receive_deposit(stay.id, DepositRequest(amount=Decimal("1000"), payment_method="cash", reference="DEP-REPLAY"), self.db, self.user)
+        first = apply_deposit(stay.id, DepositApply(amount=Decimal("1000")), self.db, self.user)
+        before = (
+            self.db.query(DepositTransaction).count(), self.db.query(FinancialTransaction).count(),
+            self.db.query(LedgerEntry).count(), self.db.query(Payment).count(), self.db.query(AuditLog).count()
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            apply_deposit(stay.id, DepositApply(amount=Decimal("1000")), self.db, self.user)
+        self.assertEqual(ctx.exception.status_code, 409)
+        after = (
+            self.db.query(DepositTransaction).count(), self.db.query(FinancialTransaction).count(),
+            self.db.query(LedgerEntry).count(), self.db.query(Payment).count(), self.db.query(AuditLog).count()
+        )
+        self.assertEqual(after, before)
+        self.assertEqual(self.db.get(Payment, first["payment_id"]).amount, Decimal("1000.00"))
 
     def test_deposit_transfer_moves_balance_between_reservations(self):
         source_reservation = self.make_reservation(); source_stay = self.make_stay(source_reservation, self.room1)
