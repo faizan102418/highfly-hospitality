@@ -7,8 +7,9 @@ from fastapi import HTTPException
 from sqlalchemy import event, func, or_, select
 from sqlalchemy.orm import Session
 
-from .models import DepositTransaction, FinancialTransaction, Folio, FolioItem, LedgerEntry, Payment
+from .models import DepositTransaction, FinancialTransaction, Folio, FolioItem, LedgerEntry, Payment, Reservation
 from .financial_models import Invoice, PaymentRefund
+from .financial_configuration import effective_service_charge_rate
 
 MONEY = Decimal("0.01")
 FOOD_CATEGORIES = {"food", "restaurant", "room_service", "beverage", "drink", "snack"}
@@ -123,7 +124,10 @@ def post_folio_charge_authoritative(db: Session, *, folio_id: int, reservation_i
     transaction = post_transaction(db, transaction_type="folio_charge", description=f"Folio charge #{item_id}: {category}", reference_type="folio_item", reference_id=str(item_id), folio_id=folio_id, reservation_id=reservation_id, created_by=created_by, idempotency_key=idempotency_key or f"folio-charge:{item_id}", lines=[{"account": "Guest Receivables", "direction": "debit", "amount": gross, "folio_id": folio_id, "stay_id": stay_id}, {"account": "Revenue - " + (category[:45] or "Other"), "direction": "credit", "amount": gross, "folio_id": folio_id, "stay_id": stay_id}])
     if discount > 0: post_transaction(db, transaction_type="folio_discount", description=f"Discount for folio item #{item_id}", reference_type="folio_item_discount", reference_id=str(item_id), folio_id=folio_id, reservation_id=reservation_id, created_by=created_by, idempotency_key=f"folio-discount:{item_id}", lines=[{"account": "Revenue - " + (category[:45] or "Other"), "direction": "debit", "amount": discount, "folio_id": folio_id, "stay_id": stay_id}, {"account": "Guest Receivables", "direction": "credit", "amount": discount, "folio_id": folio_id, "stay_id": stay_id}])
     if category.strip().lower() in FOOD_CATEGORIES:
-        service_charge = money(net_amount * Decimal("0.10"))
+        reservation = db.get(Reservation, reservation_id)
+        if reservation is None:
+            raise ValueError(f"Reservation {reservation_id} does not exist")
+        service_charge = money(net_amount * effective_service_charge_rate(db, reservation.property_id))
         if service_charge > 0: post_transaction(db, transaction_type="service_charge", description=f"Food service charge for folio item #{item_id}", reference_type="folio_item_service_charge", reference_id=str(item_id), folio_id=folio_id, reservation_id=reservation_id, created_by=created_by, idempotency_key=f"folio-service-charge:{item_id}", lines=[{"account": "Guest Receivables", "direction": "debit", "amount": service_charge, "folio_id": folio_id, "stay_id": stay_id}, {"account": "Staff Service Charges Payable", "direction": "credit", "amount": service_charge, "folio_id": folio_id, "stay_id": stay_id}])
     apply_available_deposits(db, folio_id=folio_id, reservation_id=reservation_id, created_by=created_by)
     return transaction

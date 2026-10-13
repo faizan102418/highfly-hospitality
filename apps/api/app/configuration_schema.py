@@ -29,7 +29,8 @@ PLATFORM_DEFAULTS = {
     "check_out_time": "12:00",
     "cancellation_hours": "24",
     "tax_rate_percent": "0",
-    "service_charge_percent": "0",
+    # Preserve the established 10% food service charge until a tenant overrides it.
+    "service_charge_percent": "10",
     "discount_approval_threshold": "0",
     "enabled_modules": "front_desk,finance,reporting",
     "housekeeping_workflow": "standard",
