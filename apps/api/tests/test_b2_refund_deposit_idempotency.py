@@ -179,6 +179,18 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         self.assertEqual(replay["balance"], Decimal("60.00"))
         self.assertFalse(applied["replayed"])
         self.assertTrue(replay["replayed"])
+        self.assertIsNotNone(applied["payment_id"])
+        self.assertEqual(applied["payment_id"], replay["payment_id"])
+        self.assertEqual(
+            self.db.scalar(
+                select(func.count()).select_from(Payment).where(
+                    Payment.folio_id == self.folio.id,
+                    Payment.reference == "deposit-apply-001",
+                    Payment.method == "deposit",
+                )
+            ),
+            1,
+        )
         self.assertEqual(
             self.db.scalar(
                 select(func.count()).select_from(FinancialTransaction).where(FinancialTransaction.transaction_type == "deposit_applied")
