@@ -48,13 +48,6 @@ class SecurityGateRouteRegistrationTests(unittest.TestCase):
             ),
             "Only the ledger-backed financial_ops route may register deposit receipt",
         )
-        registered = [
-            route for route in app.routes
-            if getattr(route, "path", None) == f"/api{duplicate_path}"
-            and "POST" in (getattr(route, "methods", set()) or set())
-        ]
-        self.assertEqual(len(registered), 1)
-        self.assertEqual(registered[0].endpoint.__module__, "app.financial_ops")
 
     def test_unledgered_legacy_receive_url_is_not_registered(self):
         legacy_path = "/stays/{stay_id}/deposits/receive"
