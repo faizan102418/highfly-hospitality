@@ -199,7 +199,7 @@ class PhaseB2RefundDepositIdempotencyTests(unittest.TestCase):
         )
         self.assertEqual(
             self.db.scalar(
-                select(func.count()).select_from(DepositTransaction).where(DepositTransaction.reference == "deposit-apply-001")
+                select(func.count()).select_from(DepositTransaction).where(DepositTransaction.reference == "APP-1")
             ),
             1,
         )
