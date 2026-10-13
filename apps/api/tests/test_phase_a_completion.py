@@ -75,7 +75,7 @@ class PhaseACompletionTests(unittest.TestCase):
         seed_deposit = DepositTransaction(stay_id=stay.id, folio_id=folio.id, transaction_type="received", amount=Decimal("200.00"), payment_method="cash", reference="DEP-SEED", created_by=self.user.id)
         self.db.add(seed_deposit)
         self.db.flush()
-        business_date_state = self.db.get(BusinessDateState, 1)
+        business_date_state = self.db.scalar(select(BusinessDateState).where(BusinessDateState.property_id == self.property.id))
         if business_date_state is None:
             self.db.add(BusinessDateState(property_id=self.property.id, current_business_date=date(2026, 9, 8)))
         else:
