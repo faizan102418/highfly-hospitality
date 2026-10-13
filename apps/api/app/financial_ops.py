@@ -341,10 +341,9 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
     transaction_type = payload.get("transaction_type"); amount = money(payload.get("amount", 0))
     if transaction_type not in {"received", "applied", "refunded", "adjusted"} or amount <= 0: raise HTTPException(status_code=400, detail="Invalid deposit transaction")
     key = (idempotency_key or "").strip()
-    if transaction_type == "applied":
-        folio_for_application = db.scalar(select(Folio).where(Folio.reservation_id == stay.reservation_id))
-        if folio_for_application is None or folio_for_application.status != "open":
-            raise HTTPException(status_code=409, detail="Deposit application requires an open folio for the stay's reservation")
+    folio = db.scalar(select(Folio).where(Folio.reservation_id == stay.reservation_id))
+    if transaction_type == "applied" and (folio is None or folio.status != "open"):
+        raise HTTPException(status_code=409, detail="Deposit application requires an open folio for the stay's reservation")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if transaction_type in {"applied", "refunded"} and not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for deposit application/refund")
     if key:
@@ -360,13 +359,13 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
                 or existing_deposit.transaction_type != transaction_type
                 or existing_deposit.payment_method != expected_method
                 or existing_deposit.notes != payload.get("notes")
-                or (transaction_type == "applied" and existing_deposit.folio_id != folio.id if "folio" in locals() else False)
+                or (transaction_type == "applied" and existing_deposit.folio_id != folio.id)
             ): raise HTTPException(status_code=409, detail="Idempotency key is already bound to different deposit parameters")
             existing_payment = db.scalar(select(Payment).where(Payment.folio_id == existing_deposit.folio_id, Payment.reference == existing_deposit.reference, Payment.method == "deposit")) if transaction_type == "applied" else None
             if transaction_type == "applied" and existing_payment is None:
                 raise HTTPException(status_code=409, detail="Idempotent deposit application is missing its folio payment record")
             return {"id": existing_deposit.id, "stay_id": stay.id, "transaction_type": existing_deposit.transaction_type, "amount": existing_deposit.amount, "payment_id": existing_payment.id if existing_payment else None, "balance": stay_deposit_ledger_balance(db, stay.id), "replayed": True}
-    folio = db.scalar(select(Folio).where(Folio.reservation_id == stay.reservation_id)); reservation = db.get(Reservation, stay.reservation_id); current = stay_deposit_ledger_balance(db, stay.id); signed = amount if transaction_type in {"received", "adjusted"} else -amount; new_balance = money(current + signed)
+    reservation = db.get(Reservation, stay.reservation_id); current = stay_deposit_ledger_balance(db, stay.id); signed = amount if transaction_type in {"received", "adjusted"} else -amount; new_balance = money(current + signed)
     if new_balance < 0: raise HTTPException(status_code=409, detail="Deposit transaction exceeds available deposit balance")
     required_deposit = money(stay.agreed_rate * max(0, (stay.check_out - stay.check_in).days))
     if required_deposit > 0 and new_balance > required_deposit:
