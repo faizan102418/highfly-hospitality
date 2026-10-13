@@ -78,7 +78,7 @@ class BrandingUpdate(BaseModel):
     @field_validator("email")
     @classmethod
     def validate_email(cls, value: str | None) -> str | None:
-        if value is not None and value.strip() and not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", value):
+        if value is not None and value.strip() and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
             raise ValueError("Invalid email address")
         return value.strip() if value is not None else None
 
