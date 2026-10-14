@@ -10,7 +10,11 @@ from tenant_test_support import ensure_test_property, ensure_test_property_acces
 from app.db import Base
 from app.ledger import post_deposit_received
 from app.financial_ops import create_deposit_with_ledger
-from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
+from app.billing import add_folio_item, add_payment
+from app.front_desk import atomic_checkout
+from app.reports import report_summary
+from app.schemas import FolioItemCreate, PaymentCreate
+from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
     DepositApplyCreate,
     DepositRefundCreate,
@@ -320,6 +324,85 @@ class PhaseACompletionTests(unittest.TestCase):
             self.db.query(AuditLog).count(),
         )
         self.assertEqual(after, before)
+
+    def test_end_to_end_reservation_checkin_charges_payment_checkout_reporting(self):
+        checked_in = check_in_stay(
+            self.stay.id,
+            StayCheckInPayload(reason="End-to-end journey"),
+            self.db,
+            self.user,
+        )
+        self.assertEqual(checked_in["status"], "checked_in")
+        self.assertEqual(self.reservation.status, "checked_in")
+
+        add_folio_item(
+            self.folio.id,
+            FolioItemCreate(
+                description="Minibar",
+                category="other",
+                quantity=Decimal("1"),
+                unit_price=Decimal("20.00"),
+                discount=Decimal("0.00"),
+            ),
+            self.db,
+            self.user,
+        )
+        add_payment(
+            self.folio.id,
+            PaymentCreate(amount=Decimal("170.00"), method="cash", reference="E2E-CASH"),
+            "pms-journey-payment",
+            self.db,
+            self.user,
+        )
+
+        checkout = atomic_checkout(self.reservation.id, self.db, self.user)
+        self.assertEqual(checkout["status"], "checked_out")
+        self.assertEqual(checkout["folio_status"], "closed")
+        self.assertEqual(self.db.get(Room, self.room.id).status, "dirty")
+        self.assertEqual(self.db.get(Stay, self.stay.id).status, "completed")
+
+        transactions = self.db.scalars(
+            select(FinancialTransaction).where(
+                FinancialTransaction.property_id == self.property.id,
+                FinancialTransaction.business_date == date(2026, 9, 8),
+                FinancialTransaction.status == "posted",
+            )
+        ).all()
+        transaction_ids = [transaction.id for transaction in transactions]
+        entries = self.db.scalars(
+            select(LedgerEntry).where(LedgerEntry.transaction_id.in_(transaction_ids))
+        ).all()
+        debits = sum((Decimal(entry.amount) for entry in entries if entry.direction == "debit"), Decimal("0.00"))
+        credits = sum((Decimal(entry.amount) for entry in entries if entry.direction == "credit"), Decimal("0.00"))
+        self.assertEqual(debits, credits)
+
+        report = report_summary(date(2026, 9, 8), date(2026, 9, 8), self.db, self.user)
+        self.assertEqual(report["revenue"]["net"], 170.0)
+        self.assertEqual(report["revenue"]["payments_received"], 370.0)
+        self.assertEqual(report["revenue"]["outstanding_balance"], 0.0)
+        self.assertIn("Booking Guest", [guest["guest_name"] for guest in report["top_guests"]])
+
+    def test_rejected_unsettled_checkout_rolls_back_room_night_ledger_writes(self):
+        check_in_stay(
+            self.stay.id,
+            StayCheckInPayload(reason="Unsettled checkout rollback"),
+            self.db,
+            self.user,
+        )
+        before_transactions = self.db.query(FinancialTransaction).count()
+        before_items = self.db.query(FolioItem).count()
+
+        with self.assertRaises(HTTPException) as denied:
+            atomic_checkout(self.reservation.id, self.db, self.user)
+
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertIn("outstanding balance", denied.exception.detail)
+        self.assertEqual(self.db.query(FinancialTransaction).count(), before_transactions)
+        self.assertEqual(self.db.query(FolioItem).count(), before_items)
+        self.assertEqual(self.db.get(Reservation, self.reservation.id).status, "checked_in")
+        self.assertEqual(self.db.get(Folio, self.folio.id).status, "open")
+        self.assertEqual(self.db.get(Room, self.room.id).status, "occupied")
+        self.assertEqual(self.db.get(Stay, self.stay.id).status, "checked_in")
 
 
 if __name__ == "__main__":
