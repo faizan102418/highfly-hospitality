@@ -34,6 +34,7 @@ from app.phase_a_completion import (
     update_folio_window,
 )
 from app.pms_core import Stay
+from app.reservation_workflows import ReservationRoomSetup, ReservationWorkflowCreate, create_reservation_workflow
 from app.stay_lifecycle import StayFolioWindow
 from app.tenancy import Organization, Property
 
@@ -325,25 +326,50 @@ class PhaseACompletionTests(unittest.TestCase):
         )
         self.assertEqual(after, before)
 
+    def _create_reservation_without_deposit(self):
+        created = create_reservation_workflow(
+            ReservationWorkflowCreate(
+                guest_id=self.guest_bilal.id,
+                check_in=date(2026, 9, 8),
+                check_out=date(2026, 9, 12),
+                rooms=[
+                    ReservationRoomSetup(
+                        room_id=self.room_2.id,
+                        occupant_guest_id=self.guest_bilal.id,
+                        agreed_rate=Decimal("150.00"),
+                    )
+                ],
+                deposit_received=Decimal("0.00"),
+            ),
+            self.db,
+            self.user,
+        )
+        reservation = self.db.get(Reservation, created["id"])
+        stay = self.db.scalar(select(Stay).where(Stay.reservation_id == reservation.id))
+        folio = self.db.get(Folio, created["folio_id"])
+        return reservation, stay, folio
+
     def test_end_to_end_reservation_checkin_charges_payment_checkout_reporting(self):
+        reservation, stay, folio = self._create_reservation_without_deposit()
         checked_in = check_in_stay(
-            self.stay.id,
+            stay.id,
             StayCheckInPayload(reason="End-to-end journey"),
             self.db,
             self.user,
         )
         self.assertEqual(checked_in["status"], "checked_in")
-        self.assertEqual(self.reservation.status, "checked_in")
+        self.assertEqual(self.db.get(Reservation, reservation.id).status, "checked_in")
 
-        post_accrued_room_charges(
+        posted_room_nights = post_accrued_room_charges(
             self.db,
-            self.reservation,
-            self.folio,
+            reservation,
+            folio,
             date(2026, 9, 8),
             self.user.id,
         )
+        self.assertEqual(posted_room_nights, 1)
         add_folio_item(
-            self.folio.id,
+            folio.id,
             FolioItemCreate(
                 description="Minibar",
                 category="other",
@@ -355,18 +381,18 @@ class PhaseACompletionTests(unittest.TestCase):
             self.user,
         )
         add_payment(
-            self.folio.id,
+            folio.id,
             PaymentCreate(amount=Decimal("170.00"), method="cash", reference="E2E-CASH"),
             "pms-journey-payment",
             self.db,
             self.user,
         )
 
-        checkout = atomic_checkout(self.reservation.id, self.db, self.user)
+        checkout = atomic_checkout(reservation.id, self.db, self.user)
         self.assertEqual(checkout["status"], "checked_out")
         self.assertEqual(checkout["folio_status"], "closed")
-        self.assertEqual(self.db.get(Room, self.room.id).status, "dirty")
-        self.assertEqual(self.db.get(Stay, self.stay.id).status, "completed")
+        self.assertEqual(self.db.get(Room, self.room_2.id).status, "dirty")
+        self.assertEqual(self.db.get(Stay, stay.id).status, "completed")
 
         transactions = self.db.scalars(
             select(FinancialTransaction).where(
@@ -384,16 +410,15 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(debits, credits)
 
         report = report_summary(date(2026, 9, 8), date(2026, 9, 8), self.db, self.user)
-        self.assertEqual(report["revenue"]["net"], 370.0)
+        self.assertEqual(report["revenue"]["net"], 170.0)
         self.assertEqual(report["revenue"]["payments_received"], 370.0)
         self.assertEqual(report["revenue"]["outstanding_balance"], 0.0)
         self.assertIn("Booking Guest", [guest["guest_name"] for guest in report["top_guests"]])
 
     def test_rejected_unsettled_checkout_rolls_back_room_night_ledger_writes(self):
-        self.stay.agreed_rate = Decimal("300.00")
-        self.db.commit()
+        reservation, stay, folio = self._create_reservation_without_deposit()
         check_in_stay(
-            self.stay.id,
+            stay.id,
             StayCheckInPayload(reason="Unsettled checkout rollback"),
             self.db,
             self.user,
@@ -402,16 +427,16 @@ class PhaseACompletionTests(unittest.TestCase):
         before_items = self.db.query(FolioItem).count()
 
         with self.assertRaises(HTTPException) as denied:
-            atomic_checkout(self.reservation.id, self.db, self.user)
+            atomic_checkout(reservation.id, self.db, self.user)
 
         self.assertEqual(denied.exception.status_code, 409)
         self.assertIn("outstanding balance", denied.exception.detail)
         self.assertEqual(self.db.query(FinancialTransaction).count(), before_transactions)
         self.assertEqual(self.db.query(FolioItem).count(), before_items)
-        self.assertEqual(self.db.get(Reservation, self.reservation.id).status, "checked_in")
-        self.assertEqual(self.db.get(Folio, self.folio.id).status, "open")
-        self.assertEqual(self.db.get(Room, self.room.id).status, "occupied")
-        self.assertEqual(self.db.get(Stay, self.stay.id).status, "checked_in")
+        self.assertEqual(self.db.get(Reservation, reservation.id).status, "checked_in")
+        self.assertEqual(self.db.get(Folio, folio.id).status, "open")
+        self.assertEqual(self.db.get(Room, self.room_2.id).status, "occupied")
+        self.assertEqual(self.db.get(Stay, stay.id).status, "checked_in")
 
 
 if __name__ == "__main__":
