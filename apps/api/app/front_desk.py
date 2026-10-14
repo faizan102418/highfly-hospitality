@@ -14,7 +14,7 @@ from .db import get_db
 from .business_date import get_current_business_date
 from .financial_authority import folio_ledger_summary
 from .ledger import post_deposit_received
-from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Reservation, ReservationRoom, Room, RoomType, StayRateSegment, User
+from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Reservation, ReservationRoom, Room, RoomType, StayOccupant, StayRateSegment, User
 from .pms_core import Stay
 from .tenancy import resolve_authorized_property
 
@@ -76,7 +76,7 @@ def atomic_checkout(
         raise HTTPException(status_code=404, detail="Reservation not found")
     # Checkout mutates the reservation, folio, stay records, and rooms. Resolve
     # explicit property access before checking state or posting any charges.
-    resolve_authorized_property(db, user.id, reservation.property_id)
+    property_ = resolve_authorized_property(db, user.id, reservation.property_id)
     if reservation.status != "checked_in":
         raise HTTPException(status_code=409, detail="Reservation is not checked in")
 
@@ -91,6 +91,41 @@ def atomic_checkout(
     if folio.status != "open":
         raise HTTPException(status_code=409, detail="Folio is already closed")
 
+    # Validate every room and guest reference before posting charges or mutating
+    # checkout state. Legacy/imported ReservationRoom and Stay rows may otherwise
+    # point at records owned by another property.
+    room_ids = db.scalars(
+        select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)
+    ).all()
+    stays = db.scalars(
+        select(Stay).where(Stay.reservation_id == reservation.id).order_by(Stay.id)
+    ).all()
+    referenced_room_ids = set(room_ids) | {stay.room_id for stay in stays}
+    if not room_ids or not referenced_room_ids:
+        raise HTTPException(status_code=409, detail="Reservation has an invalid room assignment")
+    rooms = db.scalars(select(Room).where(Room.id.in_(referenced_room_ids))).all()
+    rooms_by_id = {room.id: room for room in rooms}
+    if len(rooms_by_id) != len(referenced_room_ids) or any(
+        room.property_id != property_.id for room in rooms
+    ):
+        raise HTTPException(status_code=409, detail="Reservation has an invalid room assignment")
+
+    stay_ids = [stay.id for stay in stays]
+    guest_ids = {reservation.guest_id}
+    guest_ids.update(stay.guest_id for stay in stays if stay.guest_id is not None)
+    if stay_ids:
+        guest_ids.update(
+            db.scalars(
+                select(StayOccupant.guest_id).where(StayOccupant.stay_id.in_(stay_ids))
+            ).all()
+        )
+    guest_ids.discard(None)
+    guests = db.scalars(select(Guest).where(Guest.id.in_(guest_ids))).all() if guest_ids else []
+    if len({guest.id for guest in guests}) != len(guest_ids) or any(
+        guest.property_id != property_.id for guest in guests
+    ):
+        raise HTTPException(status_code=409, detail="Reservation has an invalid guest assignment")
+
     # Final checkout must first reconcile any room night that belongs to the
     # current hotel business date. The reconciler is idempotent and uses the
     # existing authoritative financial ledger.
@@ -104,24 +139,18 @@ def atomic_checkout(
             detail=f"Guest must settle the folio before checkout; outstanding balance is {balance}",
         )
 
-    room_ids = db.scalars(
-        select(ReservationRoom.room_id)
-        .where(ReservationRoom.reservation_id == reservation.id)
-    ).all()
     checkout_at = datetime.utcnow()
 
     folio.status = "closed"
     reservation.status = "checked_out"
 
-    for stay in db.scalars(
-        select(Stay).where(Stay.reservation_id == reservation.id).order_by(Stay.id)
-    ).all():
+    for stay in stays:
         stay.status = "completed"
         stay.actual_check_out = stay.actual_check_out or checkout_at
 
     for room_id in room_ids:
-        room = db.get(Room, room_id)
-        if room and room.status == "occupied":
+        room = rooms_by_id[room_id]
+        if room.status == "occupied":
             room.status = "dirty"
 
     audit(
