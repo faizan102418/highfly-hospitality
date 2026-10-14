@@ -16,7 +16,7 @@ from .financial_authority import folio_ledger_summary
 from .financial_models import FolioItemWindow, Invoice, InvoiceSequence, PaymentRefund
 from .ledger import post_deposit_received, post_transaction, scoped_idempotency_key
 from .models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Room, User
-from .pms_core import FolioWindow, Stay
+from .pms_core import BookingGroup, FolioWindow, GroupReservation, Stay
 from .tenancy import Property, resolve_authorized_property
 
 router = APIRouter(prefix="", tags=["financial-operations"])
