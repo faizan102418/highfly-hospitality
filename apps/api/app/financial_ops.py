@@ -16,7 +16,7 @@ from .financial_authority import folio_ledger_summary
 from .financial_models import FolioItemWindow, Invoice, InvoiceSequence, PaymentRefund
 from .ledger import post_deposit_received, post_transaction, scoped_idempotency_key
 from .models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Room, User
-from .pms_core import FolioWindow, Stay
+from .pms_core import BookingGroup, FolioWindow, GroupReservation, Stay
 from .tenancy import Property, resolve_authorized_property
 
 router = APIRouter(prefix="", tags=["financial-operations"])
@@ -167,7 +167,21 @@ def create_folio_window(folio_id: int, payload: WindowCreate, db: Session = Depe
     property_ = resolve_authorized_property(db, user.id)
     folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id))
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
-    if payload.guest_id and not db.scalar(select(Guest.id).where(Guest.id == payload.guest_id, Guest.property_id == property_.id)): raise HTTPException(status_code=404, detail="Guest not found")
+    if payload.guest_id and not db.scalar(select(Guest.id).where(Guest.id == payload.guest_id, Guest.property_id == property_.id)):
+        raise HTTPException(status_code=404, detail="Guest not found")
+    if payload.group_id:
+        group = db.get(BookingGroup, payload.group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail="Group not found")
+        if group.property_id != property_.id:
+            raise HTTPException(status_code=409, detail="Folio window group belongs to a different property")
+        if payload.payer_type in {"group", "company"} and not db.scalar(
+            select(GroupReservation.group_id).where(
+                GroupReservation.group_id == group.id,
+                GroupReservation.reservation_id == folio.reservation_id,
+            )
+        ):
+            raise HTTPException(status_code=409, detail="Folio window group is not linked to this reservation")
     window = FolioWindow(folio_id=folio_id, name=payload.name, payer_type=payload.payer_type, guest_id=payload.guest_id, group_id=payload.group_id); db.add(window); db.flush(); audit(db, user.id, "create", "folio_window", window.id, {"folio_id": folio_id, "name": window.name}); db.commit(); db.refresh(window)
     return {"id": window.id, "folio_id": window.folio_id, "name": window.name, "payer_type": window.payer_type, "guest_id": window.guest_id, "group_id": window.group_id, "status": window.status}
 

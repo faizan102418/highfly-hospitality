@@ -21,10 +21,12 @@ from app.billing import (
 from app.schemas import FolioItemCreate, FolioItemUpdate, PaymentCreate
 from app.models import AuditLog, FinancialTransaction, FolioItem
 from app.folio_corrections import FolioItemCorrection, correct_folio_item, reverse_folio_item
+from app.financial_ops import WindowCreate as FinancialWindowCreate, create_folio_window as create_financial_folio_window
+from app.pms_core import create_folio_window as create_core_folio_window
 from app.financial_ops import AdjustmentCreate, create_adjustment
 from datetime import date
 from app.tenancy import Organization, Property, PropertyUserAccess, resolve_authorized_property
-from app.pms_core import BookingGroup, GroupReservation, GroupReservationLink, Stay, get_group, list_groups, link_reservation_to_group
+from app.pms_core import BookingGroup, FolioWindow, GroupReservation, GroupReservationLink, Stay, get_group, list_groups, link_reservation_to_group
 from app.phase_a_workflows import stay_or_404 as workflow_stay_or_404
 from app.phase_a_completion import stay_or_404 as completion_stay_or_404
 from app.reservation_workflows import (
@@ -380,6 +382,85 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
             self.assertEqual(db.query(FinancialTransaction).count(), transaction_count)
             self.assertEqual(db.query(AuditLog).count(), audit_count)
             db.rollback()
+
+    def test_folio_window_rejects_foreign_group_reference_in_both_routes(self):
+        suffix = uuid4().hex[:12]
+        with Session(engine) as db:
+            allowed_property = ensure_test_property(db)
+            organization = Organization(
+                name=f"Folio Window Isolation Org {suffix}",
+                slug=f"folio-window-isolation-org-{suffix}",
+            )
+            db.add(organization)
+            db.flush()
+            foreign_property = Property(
+                organization_id=organization.id,
+                name=f"Folio Window Foreign Property {suffix}",
+                code=f"FWI-{suffix[:6]}",
+                slug=f"folio-window-foreign-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(foreign_property)
+            role = db.scalar(select(Role).where(Role.name == "admin"))
+            if role is None:
+                role = Role(name="admin")
+                db.add(role)
+                db.flush()
+            user = User(username=f"folio-window-isolation-{suffix}", password_hash="test", role_id=role.id)
+            db.add(user)
+            db.flush()
+            db.add(PropertyUserAccess(
+                user_id=user.id,
+                property_id=allowed_property.id,
+                access_scope="property",
+                is_primary=True,
+            ))
+            allowed_guest = Guest(property_id=allowed_property.id, full_name=f"Allowed window guest {suffix}")
+            db.add(allowed_guest)
+            db.flush()
+            reservation = Reservation(
+                property_id=allowed_property.id,
+                guest_id=allowed_guest.id,
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 2),
+                status="reserved",
+            )
+            db.add(reservation)
+            db.flush()
+            folio = Folio(reservation_id=reservation.id, status="open")
+            foreign_group = BookingGroup(
+                property_id=foreign_property.id,
+                code=f"FWG-{suffix}",
+                name=f"Foreign group {suffix}",
+            )
+            db.add_all([folio, foreign_group])
+            db.flush()
+            initial_count = db.query(FolioWindow).count()
+
+            with self.assertRaises(HTTPException) as financial_denied:
+                create_financial_folio_window(
+                    folio.id,
+                    FinancialWindowCreate(name="Foreign group window", group_id=foreign_group.id),
+                    db,
+                    user,
+                )
+            self.assertEqual(financial_denied.exception.status_code, 409)
+            self.assertEqual(db.query(FolioWindow).count(), initial_count)
+
+            with self.assertRaises(HTTPException) as core_denied:
+                create_core_folio_window(
+                    folio.id,
+                    name="Foreign group window",
+                    payer_type="guest",
+                    group_id=foreign_group.id,
+                    db=db,
+                    user=user,
+                )
+            self.assertEqual(core_denied.exception.status_code, 409)
+            self.assertEqual(db.query(FolioWindow).count(), initial_count)
+            db.rollback()
+
 
     def test_folio_corrections_deny_foreign_property_without_financial_side_effects(self):
         suffix = uuid4().hex[:12]
