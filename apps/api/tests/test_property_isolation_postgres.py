@@ -19,7 +19,8 @@ from app.billing import (
     update_folio_item,
 )
 from app.schemas import FolioItemCreate, FolioItemUpdate, PaymentCreate
-from app.models import FolioItem
+from app.models import AuditLog, FinancialTransaction, FolioItem
+from app.folio_corrections import FolioItemCorrection, correct_folio_item, reverse_folio_item
 from datetime import date
 from app.tenancy import Organization, Property, PropertyUserAccess, resolve_authorized_property
 from app.pms_core import BookingGroup, GroupReservation, GroupReservationLink, Stay, get_group, list_groups, link_reservation_to_group
@@ -291,6 +292,91 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
                     user,
                 )
             self.assertEqual(workflow_group_denied.exception.status_code, 409)
+            db.rollback()
+
+
+    def test_folio_corrections_deny_foreign_property_without_financial_side_effects(self):
+        suffix = uuid4().hex[:12]
+        with Session(engine) as db:
+            allowed_property = ensure_test_property(db)
+            organization = Organization(name=f"Correction Isolation Org {suffix}", slug=f"correction-isolation-org-{suffix}")
+            db.add(organization)
+            db.flush()
+            foreign_property = Property(
+                organization_id=organization.id,
+                name=f"Correction Foreign Property {suffix}",
+                code=f"COR-{suffix[:6]}",
+                slug=f"correction-foreign-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(foreign_property)
+            role = db.scalar(select(Role).where(Role.name == "admin"))
+            if role is None:
+                role = Role(name="admin")
+                db.add(role)
+                db.flush()
+            user = User(username=f"correction-isolation-{suffix}", password_hash="test", role_id=role.id)
+            db.add(user)
+            db.flush()
+            db.add(PropertyUserAccess(user_id=user.id, property_id=allowed_property.id, access_scope="property", is_primary=True))
+            guest = Guest(property_id=foreign_property.id, full_name=f"Foreign correction guest {suffix}")
+            db.add(guest)
+            db.flush()
+            reservation = Reservation(
+                property_id=foreign_property.id,
+                guest_id=guest.id,
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 2),
+                status="checked_in",
+            )
+            db.add(reservation)
+            db.flush()
+            folio = Folio(reservation_id=reservation.id, status="open")
+            db.add(folio)
+            db.flush()
+            item = FolioItem(
+                folio_id=folio.id,
+                description="Foreign charge",
+                category="other",
+                quantity=Decimal("1.00"),
+                unit_price=Decimal("100.00"),
+                discount=Decimal("0.00"),
+            )
+            db.add(item)
+            db.flush()
+
+            transaction_count = db.query(FinancialTransaction).count()
+            audit_count = db.query(AuditLog).count()
+            original_item_count = db.query(FolioItem).count()
+            original_description = item.description
+
+            denied_calls = (
+                lambda: reverse_folio_item(folio.id, item.id, "unauthorized correction", db, user),
+                lambda: correct_folio_item(
+                    folio.id,
+                    item.id,
+                    FolioItemCorrection(
+                        description="Tampered charge",
+                        category="other",
+                        quantity=Decimal("1.00"),
+                        unit_price=Decimal("1.00"),
+                        reason="unauthorized correction",
+                    ),
+                    db,
+                    user,
+                ),
+            )
+            for call in denied_calls:
+                with self.subTest(call=call):
+                    with self.assertRaises(HTTPException) as denied:
+                        call()
+                    self.assertEqual(denied.exception.status_code, 403)
+                    self.assertEqual(db.query(FinancialTransaction).count(), transaction_count)
+                    self.assertEqual(db.query(AuditLog).count(), audit_count)
+                    self.assertEqual(db.query(FolioItem).count(), original_item_count)
+                    self.assertEqual(item.description, original_description)
+
             db.rollback()
 
 
