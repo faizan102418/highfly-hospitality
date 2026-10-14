@@ -359,6 +359,8 @@ def create_deposit_with_ledger(stay_id: int, payload: dict, idempotency_key: str
     if payload.get("folio_id") is not None:
         folio_query = folio_query.where(Folio.id == payload.get("folio_id"))
     folio = db.scalar(folio_query.order_by(Folio.id))
+    if payload.get("folio_id") is not None and folio is None:
+        raise HTTPException(status_code=404, detail="Folio not found for this stay")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if transaction_type in {"applied", "refunded"} and not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for deposit application/refund")
     if key:
