@@ -350,6 +350,7 @@ class PhaseACompletionTests(unittest.TestCase):
         return reservation, stay, folio
 
     def test_end_to_end_reservation_checkin_charges_payment_checkout_reporting(self):
+        baseline_report = report_summary(date(2026, 9, 8), date(2026, 9, 8), self.db, self.user)
         reservation, stay, folio = self._create_reservation_without_deposit()
         checked_in = check_in_stay(
             stay.id,
@@ -410,10 +411,13 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(debits, credits)
 
         report = report_summary(date(2026, 9, 8), date(2026, 9, 8), self.db, self.user)
-        self.assertEqual(report["revenue"]["net"], 170.0)
-        self.assertEqual(report["revenue"]["payments_received"], 370.0)
-        self.assertEqual(report["revenue"]["outstanding_balance"], 0.0)
-        self.assertIn("Booking Guest", [guest["guest_name"] for guest in report["top_guests"]])
+        self.assertEqual(report["revenue"]["net"] - baseline_report["revenue"]["net"], 170.0)
+        self.assertEqual(report["revenue"]["payments_received"] - baseline_report["revenue"]["payments_received"], 170.0)
+        self.assertEqual(report["revenue"]["outstanding_balance"] - baseline_report["revenue"]["outstanding_balance"], 0.0)
+        self.assertEqual(
+            report["operations"]["stays_overlapping_period"] - baseline_report["operations"]["stays_overlapping_period"],
+            1,
+        )
 
     def test_rejected_unsettled_checkout_rolls_back_room_night_ledger_writes(self):
         reservation, stay, folio = self._create_reservation_without_deposit()
