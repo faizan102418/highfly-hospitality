@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
-from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
+from app.models import FinancialTransaction, Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
+from app.front_desk import atomic_checkout
 from app.pms_core import BookingGroup, Stay
 from app.tenancy import Organization, Property
 from app.stay_lifecycle import (
@@ -187,6 +188,77 @@ class StayLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(denied.exception.status_code, 409)
         self.assertEqual(self.db.scalars(select(StayFolioWindow).where(StayFolioWindow.stay_id == self.stay.id)).all(), [])
+
+    def _prepare_checked_in_stay(self):
+        self.reservation.status = "checked_in"
+        self.room_a.status = "occupied"
+        self.stay.status = "checked_in"
+        self.db.flush()
+
+    def _create_foreign_room_and_guest(self):
+        organization = Organization(name=f"Checkout Foreign Org {id(self)}", slug=f"checkout-foreign-org-{id(self)}")
+        self.db.add(organization)
+        self.db.flush()
+        foreign_property = Property(
+            organization_id=organization.id,
+            name="Checkout Foreign Property",
+            code=f"CO-{id(self)}",
+            slug=f"checkout-foreign-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(foreign_property)
+        self.db.flush()
+        foreign_type = RoomType(property_id=foreign_property.id, name=f"Checkout Type {id(self)}", base_rate=100)
+        foreign_guest = Guest(property_id=foreign_property.id, full_name="Foreign checkout occupant")
+        self.db.add_all([foreign_type, foreign_guest])
+        self.db.flush()
+        foreign_room = Room(property_id=foreign_property.id, number=f"CO-R-{id(self)}", room_type_id=foreign_type.id, status="occupied")
+        self.db.add(foreign_room)
+        self.db.flush()
+        return foreign_room, foreign_guest
+
+    def test_checkout_rejects_cross_property_room_link_without_mutations(self):
+        self._prepare_checked_in_stay()
+        foreign_room, _ = self._create_foreign_room_and_guest()
+        self.db.add(ReservationRoom(reservation_id=self.reservation.id, room_id=foreign_room.id))
+        self.db.flush()
+        transaction_count = self.db.query(FinancialTransaction).count()
+
+        with self.assertRaises(HTTPException) as denied:
+            atomic_checkout(self.reservation.id, self.db, self.user)
+
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertEqual(self.reservation.status, "checked_in")
+        self.assertEqual(self.folio.status, "open")
+        self.assertEqual(self.stay.status, "checked_in")
+        self.assertEqual(foreign_room.status, "occupied")
+        self.assertEqual(self.db.query(FinancialTransaction).count(), transaction_count)
+
+    def test_checkout_rejects_cross_property_occupant_without_mutations(self):
+        self._prepare_checked_in_stay()
+        _, foreign_guest = self._create_foreign_room_and_guest()
+        self.db.add(
+            StayOccupant(
+                stay_id=self.stay.id,
+                guest_id=foreign_guest.id,
+                role="occupant",
+                is_primary=False,
+                check_in=self.stay.check_in,
+                check_out=self.stay.check_out,
+            )
+        )
+        self.db.flush()
+        transaction_count = self.db.query(FinancialTransaction).count()
+
+        with self.assertRaises(HTTPException) as denied:
+            atomic_checkout(self.reservation.id, self.db, self.user)
+
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertEqual(self.reservation.status, "checked_in")
+        self.assertEqual(self.folio.status, "open")
+        self.assertEqual(self.stay.status, "checked_in")
+        self.assertEqual(self.db.query(FinancialTransaction).count(), transaction_count)
 
 
 if __name__ == "__main__":
