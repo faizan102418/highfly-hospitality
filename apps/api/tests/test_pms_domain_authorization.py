@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User, DepositTransaction
+from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User, DepositTransaction
 from app.pms_core import Stay
 from app.pms_domain import (
     DepositCreate,
@@ -98,6 +98,53 @@ class PMSDomainAuthorizationTests(unittest.TestCase):
     def tearDown(self):
         self.db.rollback()
         self.db.close()
+
+    def test_split_reservation_preserves_property_ownership(self):
+        guest = Guest(property_id=self.allowed_property.id, full_name="Split Guest")
+        room_type = RoomType(property_id=self.allowed_property.id, name=f"Split Type {id(self)}", base_rate=120)
+        self.db.add_all([guest, room_type])
+        self.db.flush()
+        room_a = Room(property_id=self.allowed_property.id, number=f"SPLIT-A-{id(self)}", room_type_id=room_type.id, status="reserved")
+        room_b = Room(property_id=self.allowed_property.id, number=f"SPLIT-B-{id(self)}", room_type_id=room_type.id, status="reserved")
+        self.db.add_all([room_a, room_b])
+        self.db.flush()
+        reservation = Reservation(
+            property_id=self.allowed_property.id,
+            guest_id=guest.id,
+            check_in=date(2026, 10, 20),
+            check_out=date(2026, 10, 22),
+            status="reserved",
+        )
+        self.db.add(reservation)
+        self.db.flush()
+        folio = Folio(reservation_id=reservation.id, status="open")
+        self.db.add(folio)
+        self.db.add_all([
+            ReservationRoom(reservation_id=reservation.id, room_id=room_a.id),
+            ReservationRoom(reservation_id=reservation.id, room_id=room_b.id),
+            Stay(reservation_id=reservation.id, room_id=room_a.id, guest_id=guest.id, status="reserved", check_in=reservation.check_in, check_out=reservation.check_out, agreed_rate=Decimal("120.00")),
+            Stay(reservation_id=reservation.id, room_id=room_b.id, guest_id=guest.id, status="reserved", check_in=reservation.check_in, check_out=reservation.check_out, agreed_rate=Decimal("120.00")),
+        ])
+        self.db.commit()
+
+        result = split_reservation(
+            reservation.id,
+            ReservationSplitCreate(room_ids=[room_b.id], reason="Separate room billing"),
+            self.db,
+            self.user,
+        )
+
+        split_reservation_row = self.db.get(Reservation, result["new_reservation_id"])
+        self.assertIsNotNone(split_reservation_row)
+        self.assertEqual(split_reservation_row.property_id, self.allowed_property.id)
+        self.assertEqual(
+            self.db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == split_reservation_row.id)).all(),
+            [room_b.id],
+        )
+        self.assertEqual(
+            self.db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all(),
+            [room_a.id],
+        )
 
     def test_foreign_stay_reads_and_mutations_are_denied_without_side_effects(self):
         occupant_count = self.db.scalar(select(StayOccupant.id).where(StayOccupant.stay_id == self.stay.id))
