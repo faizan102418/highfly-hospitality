@@ -25,7 +25,7 @@ from app.financial_ops import WindowCreate as FinancialWindowCreate, create_foli
 from app.pms_core import create_folio_window as create_core_folio_window
 from datetime import date
 from app.tenancy import Organization, Property, PropertyUserAccess, resolve_authorized_property
-from app.pms_core import BookingGroup, GroupReservation, GroupReservationLink, Stay, get_group, list_groups, link_reservation_to_group
+from app.pms_core import BookingGroup, FolioWindow, GroupReservation, GroupReservationLink, Stay, get_group, list_groups, link_reservation_to_group
 from app.phase_a_workflows import stay_or_404 as workflow_stay_or_404
 from app.phase_a_completion import stay_or_404 as completion_stay_or_404
 from app.reservation_workflows import (
