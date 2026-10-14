@@ -11,7 +11,7 @@ from app.db import Base
 from app.ledger import post_deposit_received
 from app.financial_ops import create_deposit_with_ledger
 from app.billing import add_folio_item, add_payment
-from app.front_desk import atomic_checkout
+from app.front_desk import atomic_checkout, post_accrued_room_charges
 from app.reports import report_summary
 from app.schemas import FolioItemCreate, PaymentCreate
 from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, LedgerEntry, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
@@ -335,6 +335,13 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(checked_in["status"], "checked_in")
         self.assertEqual(self.reservation.status, "checked_in")
 
+        post_accrued_room_charges(
+            self.db,
+            self.reservation,
+            self.folio,
+            date(2026, 9, 8),
+            self.user.id,
+        )
         add_folio_item(
             self.folio.id,
             FolioItemCreate(
