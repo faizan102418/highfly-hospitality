@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
+from app.front_desk import atomic_checkout
 from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.pms_core import Stay
 from app.stay_lifecycle import (
@@ -119,6 +120,7 @@ class StayLifecycleAuthorizationTests(unittest.TestCase):
 
         checks = (
             lambda: get_stay_lifecycle(self.stay.id, self.db, self.user),
+            lambda: atomic_checkout(self.reservation.id, self.db, self.user),
             lambda: update_stay_dates(self.stay.id, StayDatesUpdate(check_in=date(2026, 10, 2), check_out=date(2026, 10, 4)), self.db, self.user),
             lambda: update_stay_occupant(self.stay.id, self.occupant.id, OccupantUpdate(role="changed"), self.db, self.user),
             lambda: remove_stay_occupant(self.stay.id, self.occupant.id, self.db, self.user),
@@ -134,6 +136,9 @@ class StayLifecycleAuthorizationTests(unittest.TestCase):
                     operation()
                 self.assertEqual(denied.exception.status_code, 403)
 
+        self.assertEqual(self.reservation.status, "reserved")
+        self.assertEqual(self.folio.status, "open")
+        self.assertEqual(self.room.status, "reserved")
         self.assertEqual(self.stay.room_id, original_room_id)
         self.assertEqual((self.stay.check_in, self.stay.check_out), original_dates)
         self.assertEqual(self.window.name, original_window_name)
