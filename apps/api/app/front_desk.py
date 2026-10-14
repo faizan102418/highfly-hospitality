@@ -16,6 +16,7 @@ from .financial_authority import folio_ledger_summary
 from .ledger import post_deposit_received
 from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Reservation, ReservationRoom, Room, RoomType, StayRateSegment, User
 from .pms_core import Stay
+from .tenancy import resolve_authorized_property
 
 router = APIRouter(tags=["front-desk-2"])
 MONEY = Decimal("0.01")
@@ -73,6 +74,9 @@ def atomic_checkout(
     reservation = db.get(Reservation, reservation_id)
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
+    # Checkout mutates the reservation, folio, stay records, and rooms. Resolve
+    # explicit property access before checking state or posting any charges.
+    resolve_authorized_property(db, user.id, reservation.property_id)
     if reservation.status != "checked_in":
         raise HTTPException(status_code=409, detail="Reservation is not checked in")
 
