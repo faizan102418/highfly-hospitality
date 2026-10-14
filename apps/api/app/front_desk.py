@@ -44,8 +44,8 @@ def money(value: Decimal) -> Decimal:
     return Decimal(value).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
-def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict, property_id: int) -> None:
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def folio_balance(db: Session, folio: Folio) -> Decimal:
@@ -169,6 +169,7 @@ def atomic_checkout(
             "business_date": str(business_date),
             "checked_out_at": checkout_at.isoformat(),
         },
+        property_id=property_.id,
     )
     db.commit()
 
