@@ -2,7 +2,7 @@ import unittest
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property
@@ -84,7 +84,7 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
                 LedgerEntry(transaction_id=tx.id, account="Revenue - room", direction="credit", amount=Decimal("100.00")),
             ])
             db.commit()
-            result = _financial_period_summary(db, closed_day, next_day)
+            result = _financial_period_summary(db, closed_day, next_day, property_.id)
             self.assertEqual(result["net"], Decimal("100.00"))
 
     def test_financial_summary_isolated_between_properties(self):
@@ -93,7 +93,7 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
         with Session(self.engine) as db:
             property_a = ensure_test_property(db)
             organization = db.scalar(
-                __import__("sqlalchemy").select(Organization).where(Organization.slug == "ci-test-org")
+                select(Organization).where(Organization.slug == "ci-test-org")
             )
             property_b = Property(
                 organization_id=organization.id,
