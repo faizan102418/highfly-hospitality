@@ -236,7 +236,7 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.add(other_stay)
         self.db.flush()
         other_window = StayFolioWindow(folio_id=other_folio.id, stay_id=other_stay.id, name="Other property", payer_type="guest", guest_id=other_guest.id, status="open")
-        item = FolioItem(folio_id=self.folio.id, stay_id=self.stay.id, description="Minibar", category="minibar", quantity=Decimal("1"), unit_price=Decimal("20.00"), discount=Decimal("0.00"))
+        item = FolioItem(folio_id=self.folio.id, stay_id=self.stay.id, description="Minibar", category="minibar", quantity=Decimal("1"), unit_price=Decimal("220.00"), discount=Decimal("0.00"))
         self.db.add_all([other_window, item])
         self.db.commit()
         self.db.refresh(item)
@@ -384,12 +384,14 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(debits, credits)
 
         report = report_summary(date(2026, 9, 8), date(2026, 9, 8), self.db, self.user)
-        self.assertEqual(report["revenue"]["net"], 170.0)
+        self.assertEqual(report["revenue"]["net"], 370.0)
         self.assertEqual(report["revenue"]["payments_received"], 370.0)
         self.assertEqual(report["revenue"]["outstanding_balance"], 0.0)
         self.assertIn("Booking Guest", [guest["guest_name"] for guest in report["top_guests"]])
 
     def test_rejected_unsettled_checkout_rolls_back_room_night_ledger_writes(self):
+        self.stay.agreed_rate = Decimal("300.00")
+        self.db.commit()
         check_in_stay(
             self.stay.id,
             StayCheckInPayload(reason="Unsettled checkout rollback"),
