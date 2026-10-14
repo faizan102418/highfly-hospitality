@@ -44,8 +44,8 @@ def money(value: Decimal) -> Decimal:
     return Decimal(value).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
-def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
+def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict, property_id: int) -> None:
+    db.add(AuditLog(property_id=property_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=str(entity_id), details=json.dumps(details)))
 
 
 def folio_balance(db: Session, folio: Folio) -> Decimal:
@@ -129,11 +129,15 @@ def atomic_checkout(
     # Final checkout must first reconcile any room night that belongs to the
     # current hotel business date. The reconciler is idempotent and uses the
     # existing authoritative financial ledger.
-    business_date = get_current_business_date(db)
+    business_date = get_current_business_date(db, property_id=property_.id)
     post_accrued_room_charges(db, reservation, folio, business_date, user.id)
 
     balance = folio_balance(db, folio)
     if balance != Decimal("0.00"):
+        # Room-night accruals above are part of this checkout attempt. If
+        # checkout is rejected, roll them back with the state transition so a
+        # failed request leaves no partial ledger/folio writes behind.
+        db.rollback()
         raise HTTPException(
             status_code=409,
             detail=f"Guest must settle the folio before checkout; outstanding balance is {balance}",
@@ -165,6 +169,7 @@ def atomic_checkout(
             "business_date": str(business_date),
             "checked_out_at": checkout_at.isoformat(),
         },
+        property_id=property_.id,
     )
     db.commit()
 
