@@ -134,6 +134,10 @@ def atomic_checkout(
 
     balance = folio_balance(db, folio)
     if balance != Decimal("0.00"):
+        # Room-night accruals above are part of this checkout attempt. If
+        # checkout is rejected, roll them back with the state transition so a
+        # failed request leaves no partial ledger/folio writes behind.
+        db.rollback()
         raise HTTPException(
             status_code=409,
             detail=f"Guest must settle the folio before checkout; outstanding balance is {balance}",
