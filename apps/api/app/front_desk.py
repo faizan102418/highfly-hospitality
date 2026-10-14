@@ -129,7 +129,7 @@ def atomic_checkout(
     # Final checkout must first reconcile any room night that belongs to the
     # current hotel business date. The reconciler is idempotent and uses the
     # existing authoritative financial ledger.
-    business_date = get_current_business_date(db)
+    business_date = get_current_business_date(db, property_id=property_.id)
     post_accrued_room_charges(db, reservation, folio, business_date, user.id)
 
     balance = folio_balance(db, folio)
