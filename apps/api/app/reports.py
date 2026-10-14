@@ -28,7 +28,7 @@ def overlap_nights(check_in: date, check_out: date, period_start: date, period_e
     return max(0, (end - start).days)
 
 
-def _financial_period_summary(db: Session, period_start: date, period_end_exclusive: date) -> dict:
+def _financial_period_summary(db: Session, period_start: date, period_end_exclusive: date, property_id: int) -> dict:
     """Read financial reporting from authoritative ledger business dates.
 
     This deliberately does not use FolioItem.created_at or Payment.created_at.
@@ -39,6 +39,7 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
         select(LedgerEntry.account, func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date >= period_start,
             FinancialTransaction.business_date < period_end_exclusive,
             FinancialTransaction.status == "posted",
@@ -57,6 +58,7 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
     # treating them as revenue or creating a second cash movement.
     payment_transactions = db.scalars(
         select(FinancialTransaction).where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date >= period_start,
             FinancialTransaction.business_date < period_end_exclusive,
             FinancialTransaction.status == "posted",
@@ -70,7 +72,7 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
         cash_entries = [entry for entry in entries if entry.account in CASH_ACCOUNTS]
         amount = money(sum((Decimal(entry.amount) for entry in cash_entries), Decimal("0.00")))
         method = next((entry.payment_method for entry in cash_entries if entry.payment_method), "other")
-        target = refunded if tx.transaction_type in {"payment_refund", "deposit_refunded"} else received
+        target = refunded if tx.transaction_type in {"payment_refund", "deposit_refund"} else received
         target[method] = target.get(method, Decimal("0.00")) + amount
 
     methods = sorted(set(received) | set(refunded))
@@ -91,6 +93,7 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
         select(LedgerEntry.direction, func.coalesce(func.sum(LedgerEntry.amount), 0))
         .join(FinancialTransaction, FinancialTransaction.id == LedgerEntry.transaction_id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date < period_end_exclusive,
             FinancialTransaction.status == "posted",
             LedgerEntry.account == "Guest Receivables",
@@ -111,6 +114,7 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
         select(Folio.id)
         .join(FinancialTransaction, FinancialTransaction.folio_id == Folio.id)
         .where(
+            FinancialTransaction.property_id == property_id,
             FinancialTransaction.business_date >= period_start,
             FinancialTransaction.business_date < period_end_exclusive,
             FinancialTransaction.status == "posted",
@@ -124,7 +128,7 @@ def _financial_period_summary(db: Session, period_start: date, period_end_exclus
         sum((folio_ledger_summary(db, folio_id).balance for folio_id in outstanding_folios), Decimal("0.00"))
     )
 
-    all_folio_ids = db.scalars(select(Folio.id)).all()
+    all_folio_ids = db.scalars(select(Folio.id).join(Reservation, Reservation.id == Folio.reservation_id).where(Reservation.property_id == property_id)).all()
     ar_balance = money(
         sum((folio_ledger_summary(db, folio_id).balance for folio_id in all_folio_ids), Decimal("0.00"))
     )
@@ -153,7 +157,7 @@ def report_summary(from_date: date | None = Query(default=None), to_date: date |
     period_days = (period_end_exclusive - period_start).days
     total_rooms = db.scalar(select(func.count(Room.id)).where(Room.property_id == property_.id)) or 0; operational_rooms = db.scalar(select(func.count(Room.id)).where(Room.property_id == property_.id, Room.status != "out_of_order")) or 0
     reservations = db.scalars(select(Reservation).where(Reservation.property_id == property_.id, Reservation.check_in < period_end_exclusive, Reservation.check_out > period_start, Reservation.status.in_(ACTIVE_STATUSES))).all()
-    room_count_by_reservation = {rid: int(count) for rid, count in db.execute(select(ReservationRoom.reservation_id, func.count(ReservationRoom.room_id)).group_by(ReservationRoom.reservation_id))}
+    room_count_by_reservation = {rid: int(count) for rid, count in db.execute(select(ReservationRoom.reservation_id, func.count(ReservationRoom.room_id)).join(Reservation, Reservation.id == ReservationRoom.reservation_id).where(Reservation.property_id == property_.id).group_by(ReservationRoom.reservation_id))}
     booked_room_nights = occupied_room_nights = scheduled_arrivals = scheduled_departures = actual_check_ins = actual_check_outs = completed_stays = stays_overlapping_period = legacy_lifecycle_records = 0
     for reservation in reservations:
         room_count = room_count_by_reservation.get(reservation.id, 0); planned_nights = overlap_nights(reservation.check_in, reservation.check_out, period_start, period_end_exclusive); booked_room_nights += planned_nights * room_count; stays_overlapping_period += 1
@@ -171,8 +175,8 @@ def report_summary(from_date: date | None = Query(default=None), to_date: date |
         elif reservation.status == "checked_in": occupied_room_nights += planned_nights * room_count
     available_room_nights = operational_rooms * period_days; occupancy_rate = round((occupied_room_nights / available_room_nights) * 100, 2) if available_room_nights else 0.0
 
-    financial = _financial_period_summary(db, period_start, period_end_exclusive)
-    guest_rows = db.execute(select(Guest.full_name, func.count(Reservation.id)).join(Reservation, Reservation.guest_id == Guest.id).where(Reservation.check_in < period_end_exclusive, Reservation.check_out > period_start, Reservation.status.in_(ACTIVE_STATUSES)).group_by(Guest.id, Guest.full_name).order_by(func.count(Reservation.id).desc(), Guest.full_name).limit(5)).all(); top_guests = [{"guest_name": name, "stays": int(count)} for name, count in guest_rows]
+    financial = _financial_period_summary(db, period_start, period_end_exclusive, property_.id)
+    guest_rows = db.execute(select(Guest.full_name, func.count(Reservation.id)).join(Reservation, Reservation.guest_id == Guest.id).where(Reservation.property_id == property_.id, Guest.property_id == property_.id, Reservation.check_in < period_end_exclusive, Reservation.check_out > period_start, Reservation.status.in_(ACTIVE_STATUSES)).group_by(Guest.id, Guest.full_name).order_by(func.count(Reservation.id).desc(), Guest.full_name).limit(5)).all(); top_guests = [{"guest_name": name, "stays": int(count)} for name, count in guest_rows]
     return {"from_date": period_start, "to_date": period_end_exclusive - timedelta(days=1), "period_days": period_days, "rooms": {"total": total_rooms, "operational": operational_rooms, "available_room_nights": available_room_nights, "booked_room_nights": booked_room_nights, "occupied_room_nights": occupied_room_nights, "occupancy_rate": occupancy_rate}, "operations": {"scheduled_arrivals": scheduled_arrivals, "scheduled_departures": scheduled_departures, "actual_check_ins": actual_check_ins, "actual_check_outs": actual_check_outs, "checked_in_guests": sum(1 for reservation in reservations if reservation.status == "checked_in"), "completed_stays": completed_stays, "stays_overlapping_period": stays_overlapping_period, "legacy_lifecycle_records": legacy_lifecycle_records}, "revenue": {"gross": float(financial["gross"]), "discounts": float(financial["discounts"]), "net": float(financial["net"]), "payments_received": float(financial["payments_received"]), "payments_refunded": float(financial["payments_refunded"]), "payments_net": float(financial["payments_net"]), "outstanding_balance": float(financial["outstanding_balance"]), "period_outstanding_balance": float(financial["period_outstanding_balance"]), "financial_source": financial["financial_source"]}, "payment_breakdown": financial["payment_breakdown"], "revenue_accounts": financial["revenue_accounts"], "top_guests": top_guests}
 
 
