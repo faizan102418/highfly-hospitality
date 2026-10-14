@@ -346,21 +346,22 @@ def create_folio_window(folio_id: int, name: str, payer_type: str = "guest", gue
     folio, reservation = authorized_folio_or_404(db, folio_id, user.id)
     if payer_type not in {"guest", "group", "company", "other"}:
         raise HTTPException(status_code=400, detail="Invalid payer type")
-    if payer_type == "guest" and guest_id:
+    if guest_id:
         guest = db.get(Guest, guest_id)
         if guest is None:
-            raise HTTPException(status_code=400, detail="Guest does not exist")
+            raise HTTPException(status_code=404, detail="Guest does not exist")
         if guest.property_id != reservation.property_id:
             raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
-    if payer_type in {"group", "company"} and group_id:
+    if group_id:
         group = db.get(BookingGroup, group_id)
         if group is None or group.property_id is None:
             raise HTTPException(status_code=404, detail="Group does not exist")
         if group.property_id != reservation.property_id:
             raise HTTPException(status_code=409, detail="Folio window group belongs to a different property")
-        linked = db.scalar(select(GroupReservation.group_id).where(GroupReservation.group_id == group_id, GroupReservation.reservation_id == reservation.id))
-        if linked is None:
-            raise HTTPException(status_code=409, detail="Folio window group is not linked to this reservation")
+        if payer_type in {"group", "company"}:
+            linked = db.scalar(select(GroupReservation.group_id).where(GroupReservation.group_id == group_id, GroupReservation.reservation_id == reservation.id))
+            if linked is None:
+                raise HTTPException(status_code=409, detail="Folio window group is not linked to this reservation")
     window = FolioWindow(folio_id=folio_id, name=name.strip(), payer_type=payer_type, guest_id=guest_id, group_id=group_id)
     db.add(window); db.flush()
     audit(db, user.id, "create", "folio_window", window.id, {"folio_id": folio_id, "payer_type": payer_type, "name": window.name})
