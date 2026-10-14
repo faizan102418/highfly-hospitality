@@ -2,15 +2,18 @@ import unittest
 from datetime import date
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
-from app.pms_core import Stay
+from app.pms_core import BookingGroup, Stay
+from app.tenancy import Organization, Property
 from app.stay_lifecycle import (
     FolioWindowCreate,
+    FolioWindowUpdate,
     OccupantUpdate,
     RoomReplacement,
     StayDatesUpdate,
@@ -21,6 +24,7 @@ from app.stay_lifecycle import (
     replace_stay_room,
     update_stay_dates,
     update_stay_occupant,
+    update_stay_folio_window,
 )
 
 
@@ -113,6 +117,76 @@ class StayLifecycleTests(unittest.TestCase):
         row = self.db.get(StayFolioWindow, result["id"])
         self.assertEqual(row.folio_id, self.folio.id)
         self.assertEqual(row.payer_type, "guest")
+
+    def test_folio_window_rejects_foreign_group_on_create_and_update(self):
+        organization = Organization(name=f"Foreign Group Org {id(self)}", slug=f"foreign-group-org-{id(self)}")
+        self.db.add(organization)
+        self.db.flush()
+        foreign_property = Property(
+            organization_id=organization.id,
+            name="Foreign Group Property",
+            code=f"FG-{id(self)}",
+            slug=f"foreign-group-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(foreign_property)
+        self.db.flush()
+        foreign_group = BookingGroup(
+            property_id=foreign_property.id,
+            code=f"FGC-{id(self)}",
+            name="Foreign booking group",
+        )
+        self.db.add(foreign_group)
+        self.db.flush()
+
+        with self.assertRaises(HTTPException) as denied_create:
+            create_stay_folio_window(
+                self.stay.id,
+                FolioWindowCreate(name="Foreign payer", payer_type="guest", group_id=foreign_group.id),
+                self.db,
+                self.user,
+            )
+        self.assertEqual(denied_create.exception.status_code, 409)
+        self.assertEqual(self.db.scalars(select(StayFolioWindow).where(StayFolioWindow.stay_id == self.stay.id)).all(), [])
+
+        created = create_stay_folio_window(
+            self.stay.id,
+            FolioWindowCreate(name="Local window", payer_type="guest", guest_id=self.guest.id),
+            self.db,
+            self.user,
+        )
+        window = self.db.get(StayFolioWindow, created["id"])
+        with self.assertRaises(HTTPException) as denied_update:
+            update_stay_folio_window(
+                self.stay.id,
+                window.id,
+                FolioWindowUpdate(group_id=foreign_group.id),
+                self.db,
+                self.user,
+            )
+        self.assertEqual(denied_update.exception.status_code, 409)
+        self.db.refresh(window)
+        self.assertIsNone(window.group_id)
+        self.assertEqual(window.payer_type, "guest")
+
+    def test_group_payer_requires_group_linked_to_reservation(self):
+        group = BookingGroup(
+            property_id=self.property.id,
+            code=f"UNLINKED-{id(self)}",
+            name="Unlinked booking group",
+        )
+        self.db.add(group)
+        self.db.flush()
+        with self.assertRaises(HTTPException) as denied:
+            create_stay_folio_window(
+                self.stay.id,
+                FolioWindowCreate(name="Unlinked group payer", payer_type="group", group_id=group.id),
+                self.db,
+                self.user,
+            )
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertEqual(self.db.scalars(select(StayFolioWindow).where(StayFolioWindow.stay_id == self.stay.id)).all(), [])
 
 
 if __name__ == "__main__":
