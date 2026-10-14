@@ -457,24 +457,23 @@ def check_in_reservation(reservation_id: int, db: Session = Depends(get_db), use
 
 @app.post("/api/reservations/{reservation_id}/check-out", response_model=CheckOutResponse)
 def check_out_reservation(reservation_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    property_ = resolve_authorized_property(db, user.id)
-    reservation = db.scalar(select(Reservation).where(Reservation.id == reservation_id, Reservation.property_id == property_.id))
-    if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
-    if reservation.status != "checked_in": raise HTTPException(status_code=409, detail="Reservation is not checked in")
-    room_ids = db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()
-    rooms = [db.get(Room, rid) for rid in room_ids]
-    reservation.status = "checked_out"
-    from .pms_core import Stay
-    for stay in db.scalars(select(Stay).where(Stay.reservation_id == reservation.id)).all():
-        stay.status = "completed"
-        stay.actual_check_out = stay.actual_check_out or __import__("datetime").datetime.utcnow()
-    for room in rooms:
-        if room and room.status == "occupied": room.status = "dirty"
-    write_audit(db, "check_out", "reservation", reservation.id, {"room_ids": room_ids}, user.id)
-    for room in rooms:
-        if room: write_audit(db, "check_out", "room", room.id, {"reservation_id": reservation.id, "new_status": room.status}, user.id)
-    db.commit(); db.refresh(reservation); return CheckOutResponse(**reservation_response(db, reservation).model_dump())
+    # Use the same authoritative checkout flow as front desk operations. The
+    # legacy inline implementation could mark a reservation checked out without
+    # settling its folio and could mutate a room referenced by a corrupt
+    # cross-property ReservationRoom link.
+    from .front_desk import atomic_checkout
 
+    atomic_checkout(reservation_id, db, user)
+    property_ = resolve_authorized_property(db, user.id)
+    reservation = db.scalar(
+        select(Reservation).where(
+            Reservation.id == reservation_id,
+            Reservation.property_id == property_.id,
+        )
+    )
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    return CheckOutResponse(**reservation_response(db, reservation).model_dump())
 
 @app.post("/api/reservations/{reservation_id}/transfer", response_model=ReservationResponse)
 def transfer_room(reservation_id: int, payload: RoomTransferRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
