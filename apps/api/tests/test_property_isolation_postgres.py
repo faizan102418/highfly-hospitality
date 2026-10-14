@@ -21,6 +21,7 @@ from app.billing import (
 from app.schemas import FolioItemCreate, FolioItemUpdate, PaymentCreate
 from app.models import AuditLog, FinancialTransaction, FolioItem
 from app.folio_corrections import FolioItemCorrection, correct_folio_item, reverse_folio_item
+from app.financial_ops import AdjustmentCreate, create_adjustment
 from datetime import date
 from app.tenancy import Organization, Property, PropertyUserAccess, resolve_authorized_property
 from app.pms_core import BookingGroup, GroupReservation, GroupReservationLink, Stay, get_group, list_groups, link_reservation_to_group
@@ -294,6 +295,91 @@ class PropertyIsolationPostgreSQLTests(unittest.TestCase):
             self.assertEqual(workflow_group_denied.exception.status_code, 409)
             db.rollback()
 
+
+
+    def test_adjustment_rejects_foreign_property_stay_reference_without_side_effects(self):
+        suffix = uuid4().hex[:12]
+        with Session(engine) as db:
+            allowed_property = ensure_test_property(db)
+            organization = Organization(
+                name=f"Ledger Stay Isolation Org {suffix}",
+                slug=f"ledger-stay-isolation-org-{suffix}",
+            )
+            db.add(organization)
+            db.flush()
+            foreign_property = Property(
+                organization_id=organization.id,
+                name=f"Ledger Stay Foreign Property {suffix}",
+                code=f"LSI-{suffix[:6]}",
+                slug=f"ledger-stay-foreign-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(foreign_property)
+            role = db.scalar(select(Role).where(Role.name == "admin"))
+            if role is None:
+                role = Role(name="admin")
+                db.add(role)
+                db.flush()
+            user = User(
+                username=f"ledger-stay-isolation-{suffix}",
+                password_hash="test",
+                role_id=role.id,
+            )
+            db.add(user)
+            db.flush()
+            db.add(PropertyUserAccess(
+                user_id=user.id,
+                property_id=allowed_property.id,
+                access_scope="property",
+                is_primary=True,
+            ))
+            guest = Guest(property_id=foreign_property.id, full_name=f"Foreign ledger guest {suffix}")
+            room_type = RoomType(property_id=foreign_property.id, name=f"Foreign type {suffix}", base_rate=100)
+            db.add_all([guest, room_type])
+            db.flush()
+            room = Room(
+                property_id=foreign_property.id,
+                number=f"LS-{suffix[:6]}",
+                room_type_id=room_type.id,
+                status="available",
+            )
+            reservation = Reservation(
+                property_id=foreign_property.id,
+                guest_id=guest.id,
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 2),
+                status="checked_in",
+            )
+            db.add_all([room, reservation])
+            db.flush()
+            stay = Stay(
+                reservation_id=reservation.id,
+                room_id=room.id,
+                guest_id=guest.id,
+                status="checked_in",
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 2),
+                agreed_rate=Decimal("100.00"),
+            )
+            db.add(stay)
+            db.flush()
+
+            transaction_count = db.query(FinancialTransaction).count()
+            audit_count = db.query(AuditLog).count()
+            payload = AdjustmentCreate(
+                description="Invalid cross-property stay reference",
+                lines=[
+                    {"account": "Cash", "direction": "debit", "amount": "10.00", "stay_id": stay.id},
+                    {"account": "Revenue", "direction": "credit", "amount": "10.00"},
+                ],
+            )
+            with self.assertRaises(HTTPException) as denied:
+                create_adjustment(payload, db, user)
+            self.assertEqual(denied.exception.status_code, 400)
+            self.assertEqual(db.query(FinancialTransaction).count(), transaction_count)
+            self.assertEqual(db.query(AuditLog).count(), audit_count)
+            db.rollback()
 
     def test_folio_corrections_deny_foreign_property_without_financial_side_effects(self):
         suffix = uuid4().hex[:12]

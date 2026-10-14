@@ -138,11 +138,30 @@ def post_transaction(
     for raw in lines:
         line = raw.model_dump() if isinstance(raw, LedgerLine) else dict(raw)
         line_folio_id = line.get("folio_id")
+        line_reservation = None
         if line_folio_id is not None:
             line_folio = db.get(Folio, line_folio_id)
             line_reservation = db.get(Reservation, line_folio.reservation_id) if line_folio is not None else None
             if line_reservation is None or line_reservation.property_id != property_id:
                 raise ValueError("Ledger line folio must belong to the transaction property")
+
+        # A stay is a property-scoped financial reference too. Validate it even
+        # when the ledger line omits folio_id, and ensure it matches any folio
+        # supplied on the same line.
+        line_stay_id = line.get("stay_id")
+        if line_stay_id is not None:
+            from .pms_core import Stay
+
+            line_stay = db.get(Stay, line_stay_id)
+            stay_reservation = (
+                db.get(Reservation, line_stay.reservation_id)
+                if line_stay is not None
+                else None
+            )
+            if stay_reservation is None or stay_reservation.property_id != property_id:
+                raise ValueError("Ledger line stay must belong to the transaction property")
+            if line_reservation is not None and line_stay.reservation_id != line_reservation.id:
+                raise ValueError("Ledger line stay must belong to the linked folio reservation")
 
     key = normalize_idempotency_key(idempotency_key)
     if len(lines) < 2:
