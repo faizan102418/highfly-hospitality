@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from tenant_test_support import ensure_test_property, ensure_test_property_access
 from app.db import Base
 from app.ledger import post_deposit_received
+from app.financial_ops import create_deposit_with_ledger
 from app.models import AuditLog, BusinessDateState, DepositTransaction, FinancialTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, StayOccupant, User
 from app.phase_a_completion import (
     DepositApplyCreate,
@@ -260,6 +261,65 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(self.db.get(StayFolioWindow, self.window.id).name, before_name)
         self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+
+    def test_deposit_refund_rejects_foreign_folio_without_partial_writes(self):
+        organization = Organization(name=f"Foreign Deposit Org {id(self)}", slug=f"foreign-deposit-org-{id(self)}")
+        self.db.add(organization)
+        self.db.flush()
+        foreign_property = Property(
+            organization_id=organization.id,
+            name="Foreign Deposit Property",
+            code=f"FD-{id(self)}",
+            slug=f"foreign-deposit-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(foreign_property)
+        self.db.flush()
+        foreign_guest = Guest(property_id=foreign_property.id, full_name="Foreign deposit guest")
+        self.db.add(foreign_guest)
+        self.db.flush()
+        foreign_reservation = Reservation(
+            property_id=foreign_property.id,
+            guest_id=foreign_guest.id,
+            check_in=date(2026, 9, 8),
+            check_out=date(2026, 9, 12),
+            status="reserved",
+        )
+        self.db.add(foreign_reservation)
+        self.db.flush()
+        foreign_folio = Folio(reservation_id=foreign_reservation.id, status="open")
+        self.db.add(foreign_folio)
+        self.db.flush()
+
+        before = (
+            self.db.query(DepositTransaction).count(),
+            self.db.query(FinancialTransaction).count(),
+            self.db.query(AuditLog).count(),
+        )
+        with self.assertRaises(HTTPException) as denied:
+            create_deposit_with_ledger(
+                self.stay.id,
+                {
+                    "transaction_type": "refunded",
+                    "amount": Decimal("10.00"),
+                    "payment_method": "cash",
+                    "folio_id": foreign_folio.id,
+                    "reference": "foreign-folio-refund",
+                    "notes": "must be rejected",
+                },
+                "foreign-folio-refund-key",
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(denied.exception.status_code, 404)
+        after = (
+            self.db.query(DepositTransaction).count(),
+            self.db.query(FinancialTransaction).count(),
+            self.db.query(AuditLog).count(),
+        )
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":
