@@ -11,6 +11,7 @@ import app.financial_models  # noqa: F401
 import app.models  # noqa: F401
 import app.pms_core  # noqa: F401
 from app.models import FinancialTransaction, LedgerEntry
+from app.tenancy import Organization, Property
 from app.reports import _financial_period_summary
 
 
@@ -56,7 +57,7 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
 
             # The current operational day is now 2026-09-11, but the report for
             # 2026-09-10 must still read the immutable financial business date.
-            result = _financial_period_summary(db, closed_day, next_day)
+            result = _financial_period_summary(db, closed_day, next_day, property_.id)
             self.assertEqual(result["net"], Decimal("31231.50"))
             self.assertEqual(result["payments_received"], Decimal("31231.50"))
             self.assertEqual(result["payments_net"], Decimal("31231.50"))
@@ -85,6 +86,53 @@ class HistoricalBusinessDateReportTests(unittest.TestCase):
             db.commit()
             result = _financial_period_summary(db, closed_day, next_day)
             self.assertEqual(result["net"], Decimal("100.00"))
+
+    def test_financial_summary_isolated_between_properties(self):
+        business_day = date(2026, 9, 10)
+        next_day = date(2026, 9, 11)
+        with Session(self.engine) as db:
+            property_a = ensure_test_property(db)
+            organization = db.scalar(
+                __import__("sqlalchemy").select(Organization).where(Organization.slug == "ci-test-org")
+            )
+            property_b = Property(
+                organization_id=organization.id,
+                name="Other report property",
+                code="OTHER-REPORT",
+                slug="other-report-property",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(property_b)
+            db.flush()
+
+            for property_, suffix, amount in (
+                (property_a, "A", Decimal("100.00")),
+                (property_b, "B", Decimal("900.00")),
+            ):
+                tx = FinancialTransaction(
+                    property_id=property_.id,
+                    transaction_no=f"TX-REPORT-{suffix}",
+                    business_date=business_day,
+                    transaction_type="folio_payment",
+                    status="posted",
+                    description=f"payment {suffix}",
+                )
+                db.add(tx)
+                db.flush()
+                db.add_all([
+                    LedgerEntry(transaction_id=tx.id, account="Cash", direction="debit", amount=amount, payment_method="cash"),
+                    LedgerEntry(transaction_id=tx.id, account="Guest Receivables", direction="credit", amount=amount, payment_method="cash"),
+                    LedgerEntry(transaction_id=tx.id, account="Revenue - room", direction="credit", amount=amount),
+                ])
+            db.commit()
+
+            result = _financial_period_summary(db, business_day, next_day, property_a.id)
+            self.assertEqual(result["net"], Decimal("100.00"))
+            self.assertEqual(result["payments_received"], Decimal("100.00"))
+            self.assertEqual(result["payments_net"], Decimal("100.00"))
+            self.assertEqual(result["outstanding_balance"], Decimal("0.00"))
+            self.assertEqual(result["revenue_accounts"], [{"account": "Revenue - room", "amount": 100.0}])
 
 
 if __name__ == "__main__":
