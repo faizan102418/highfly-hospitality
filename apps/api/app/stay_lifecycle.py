@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from .auth import require_roles
 from .db import Base, get_db
 from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payment, Reservation, ReservationRoom, Room, StayOccupant, User
-from .pms_core import Stay
+from .pms_core import BookingGroup, GroupReservation, Stay
 from .tenancy import resolve_authorized_property
 
 router = APIRouter(prefix="/api", tags=["stay-lifecycle"])
@@ -80,6 +80,27 @@ def authorized_stay(db: Session, stay_id: int, user_id: int) -> tuple[Stay, Rese
         raise HTTPException(status_code=404, detail="Stay not found")
     resolve_authorized_property(db, user_id, reservation.property_id)
     return stay, reservation
+
+
+def validate_folio_window_group(db: Session, reservation: Reservation, group_id: int | None, payer_type: str) -> None:
+    if payer_type in {"group", "company"} and group_id is None:
+        raise HTTPException(status_code=409, detail="Group or company payer requires a linked booking group")
+    if group_id is None:
+        return
+    group = db.get(BookingGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if group.property_id != reservation.property_id:
+        raise HTTPException(status_code=409, detail="Folio window group belongs to a different property")
+    if payer_type in {"group", "company"}:
+        linked = db.scalar(
+            select(GroupReservation.group_id).where(
+                GroupReservation.group_id == group.id,
+                GroupReservation.reservation_id == reservation.id,
+            )
+        )
+        if linked is None:
+            raise HTTPException(status_code=409, detail="Folio window group is not linked to this reservation")
 
 
 def audit(db: Session, user_id: int, action: str, entity_type: str, entity_id: int | str, details: dict) -> None:
@@ -293,6 +314,7 @@ def create_stay_folio_window(stay_id: int, payload: FolioWindowCreate, db: Sessi
         guest = db.get(Guest, payload.guest_id)
         if guest is None or guest.property_id != reservation.property_id:
             raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
+    validate_folio_window_group(db, reservation, payload.group_id, payload.payer_type)
     window = StayFolioWindow(folio_id=stay_folio_id(db, stay.id), stay_id=stay.id, name=payload.name, payer_type=payload.payer_type, guest_id=payload.guest_id, group_id=payload.group_id)
     db.add(window); db.flush()
     audit(db, user.id, "folio_window_create", "stay_folio_window", window.id, {"stay_id": stay.id, "name": window.name})
@@ -310,6 +332,9 @@ def update_stay_folio_window(stay_id: int, window_id: int, payload: FolioWindowU
         guest = db.get(Guest, payload.guest_id)
         if guest is None or guest.property_id != reservation.property_id:
             raise HTTPException(status_code=409, detail="Folio window guest belongs to a different property")
+    effective_group_id = payload.group_id if payload.group_id is not None else window.group_id
+    effective_payer_type = payload.payer_type if payload.payer_type is not None else window.payer_type
+    validate_folio_window_group(db, reservation, effective_group_id, effective_payer_type)
     for field in ("name", "payer_type", "guest_id", "group_id", "status"):
         value = getattr(payload, field)
         if value is not None:
