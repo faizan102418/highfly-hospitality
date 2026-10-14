@@ -147,6 +147,19 @@ class PhaseACompletionTests(unittest.TestCase):
         )
         self.assertEqual(transferred["source_balance"], Decimal("150.00"))
         self.assertEqual(transferred["destination_balance"], Decimal("50.00"))
+        transfer_tx_count = self.db.query(FinancialTransaction).filter(FinancialTransaction.transaction_type == "deposit_transfer").count()
+        transfer_record_count = self.db.query(DepositTransaction).filter(DepositTransaction.reference == "phase-a-transfer-001").count()
+        transfer_replay = transfer_deposit(
+            self.stay.id,
+            DepositTransferCreate(target_stay_id=other_stay.id, amount=Decimal("50.00"), reason="Room split"),
+            idempotency_key="phase-a-transfer-001",
+            db=self.db,
+            user=self.user,
+        )
+        self.assertTrue(transfer_replay["replayed"])
+        self.assertEqual(transfer_replay["transaction_id"], transferred["transaction_id"])
+        self.assertEqual(self.db.query(FinancialTransaction).filter(FinancialTransaction.transaction_type == "deposit_transfer").count(), transfer_tx_count)
+        self.assertEqual(self.db.query(DepositTransaction).filter(DepositTransaction.reference == "phase-a-transfer-001").count(), transfer_record_count)
         refunded = refund_deposit(
             self.stay.id,
             DepositRefundCreate(amount=Decimal("25.00"), payment_method="cash", reason="Guest request"),
@@ -156,6 +169,19 @@ class PhaseACompletionTests(unittest.TestCase):
         )
         self.assertEqual(refunded["balance"], Decimal("125.00"))
         self.assertTrue(self.db.scalar(select(FinancialTransaction.id).where(FinancialTransaction.transaction_type == "deposit_refund")))
+        refund_tx_count = self.db.query(FinancialTransaction).filter(FinancialTransaction.transaction_type == "deposit_refund").count()
+        refund_record_count = self.db.query(DepositTransaction).filter(DepositTransaction.reference == "phase-a-refund-001").count()
+        refund_replay = refund_deposit(
+            self.stay.id,
+            DepositRefundCreate(amount=Decimal("25.00"), payment_method="cash", reason="Guest request"),
+            idempotency_key="phase-a-refund-001",
+            db=self.db,
+            user=self.user,
+        )
+        self.assertTrue(refund_replay["replayed"])
+        self.assertEqual(refund_replay["id"], refunded["id"])
+        self.assertEqual(self.db.query(FinancialTransaction).filter(FinancialTransaction.transaction_type == "deposit_refund").count(), refund_tx_count)
+        self.assertEqual(self.db.query(DepositTransaction).filter(DepositTransaction.reference == "phase-a-refund-001").count(), refund_record_count)
         apply_result = apply_deposit(
             self.stay.id,
             DepositApplyCreate(folio_id=self.folio.id, amount=Decimal("100.00"), reason="Apply on arrival"),

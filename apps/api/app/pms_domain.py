@@ -316,7 +316,7 @@ def split_reservation(reservation_id: int, payload: ReservationSplitCreate, db: 
     if room_property_ids != {source.property_id}: raise HTTPException(status_code=409, detail="Selected rooms must belong to the reservation property")
     source_folio = db.scalar(select(Folio).where(Folio.reservation_id == source.id))
     if source_folio and db.scalar(select(Payment.id).where(Payment.folio_id == source_folio.id)): raise HTTPException(status_code=409, detail="Cannot split a reservation after payments have been posted")
-    new_reservation = Reservation(guest_id=guest_id, check_in=source.check_in, check_out=source.check_out, status="reserved", notes=source.notes)
+    new_reservation = Reservation(property_id=source.property_id, guest_id=guest_id, check_in=source.check_in, check_out=source.check_out, status="reserved", notes=source.notes)
     db.add(new_reservation); db.flush(); new_folio = Folio(reservation_id=new_reservation.id, status="open"); db.add(new_folio); db.flush()
     selected_stays = db.scalars(select(Stay).where(Stay.reservation_id == source.id, Stay.room_id.in_(payload.room_ids))).all()
     if len(selected_stays) != len(payload.room_ids): raise HTTPException(status_code=409, detail="Selected rooms do not have corresponding stays")
