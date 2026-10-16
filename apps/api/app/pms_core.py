@@ -14,7 +14,7 @@ from .models import AuditLog, DepositTransaction, Folio, Guest, Reservation, Res
 from .ledger import post_deposit_received
 from .tenancy import resolve_authorized_property
 
-router = APIRouter(prefix="/api", tags=["pms-core"])
+router = APIRouter(tags=["pms-core"])
 MONEY = Decimal("0.01")
 
 
@@ -341,7 +341,6 @@ def update_stay_discount(stay_id: int, discount_percent: Decimal = 0, discount_a
     return {"stay_id": stay.id, "discount_percent": stay.discount_percent, "discount_amount": stay.discount_amount, "net_rate": stay.agreed_rate}
 
 
-@router.post("/folios/{folio_id}/windows", status_code=201)
 def create_folio_window(folio_id: int, name: str, payer_type: str = "guest", guest_id: int | None = None, group_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     folio, reservation = authorized_folio_or_404(db, folio_id, user.id)
     if payer_type not in {"guest", "group", "company", "other"}:
@@ -369,7 +368,6 @@ def create_folio_window(folio_id: int, name: str, payer_type: str = "guest", gue
     return {"id": window.id, "folio_id": window.folio_id, "name": window.name, "payer_type": window.payer_type, "guest_id": window.guest_id, "group_id": window.group_id, "status": window.status}
 
 
-@router.get("/folios/{folio_id}/windows")
 def list_folio_windows(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
     authorized_folio_or_404(db, folio_id, user.id)
     return db.scalars(select(FolioWindow).where(FolioWindow.folio_id == folio_id).order_by(FolioWindow.id)).all()

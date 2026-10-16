@@ -14,7 +14,7 @@ from .models import AuditLog, DepositTransaction, Folio, FolioItem, Guest, Payme
 from .pms_core import BookingGroup, GroupReservation, Stay
 from .tenancy import resolve_authorized_property
 
-router = APIRouter(prefix="/api", tags=["stay-lifecycle"])
+router = APIRouter(tags=["stay-lifecycle"])
 ACTIVE_STATUSES = ("reserved", "checked_in")
 
 
