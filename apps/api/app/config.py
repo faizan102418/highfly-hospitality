@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     database_url: str = ""
     secret_key: str = "la-serene-development-secret-change-me"
     token_expire_minutes: int = Field(default=480, ge=5, le=1440)
+    bootstrap_token: str = ""
+
+    @field_validator("bootstrap_token")
+    @classmethod
+    def validate_bootstrap_token(cls, value: str) -> str:
+        if value and len(value) < 32:
+            raise ValueError("HMS_BOOTSTRAP_TOKEN must contain at least 32 characters")
+        return value
 
     @field_validator("database_url")
     @classmethod
