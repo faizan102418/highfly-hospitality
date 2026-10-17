@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import jwt
 from fastapi import HTTPException
@@ -9,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user, require_roles
 from app.db import Base
-from app.main import app
+from app.main import app, bootstrap_admin
 from app.models import Role, User
+from app.schemas import BootstrapAdminRequest
 
 
 class AuthSecurityTests(unittest.TestCase):
@@ -123,6 +125,38 @@ class AuthSecurityTests(unittest.TestCase):
 
         reception_allowed = require_roles("admin", "reception")
         self.assertIs(reception_allowed(self.user, self.db), self.user)
+
+    @staticmethod
+    def bootstrap_payload():
+        return BootstrapAdminRequest(
+            username="first-admin",
+            password="long-enough-test-password",
+            organization_name="Test Organization",
+            organization_slug="test-organization",
+            property_name="Test Property",
+            property_code="TEST-PROPERTY",
+            property_slug="test-property",
+            timezone="UTC",
+            currency="PKR",
+        )
+
+    def test_bootstrap_is_disabled_without_a_configured_token(self):
+        with patch("app.main.settings.bootstrap_token", ""):
+            with self.assertRaisesRegex(HTTPException, "HMS_BOOTSTRAP_TOKEN is configured") as ctx:
+                bootstrap_admin(self.bootstrap_payload(), setup_token=None, db=self.db)
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_bootstrap_rejects_an_invalid_setup_token(self):
+        with patch("app.main.settings.bootstrap_token", "a" * 32):
+            with self.assertRaisesRegex(HTTPException, "Invalid initial setup token") as ctx:
+                bootstrap_admin(self.bootstrap_payload(), setup_token="wrong-token", db=self.db)
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_bootstrap_still_rejects_reinitialization_with_valid_token(self):
+        with patch("app.main.settings.bootstrap_token", "a" * 32):
+            with self.assertRaisesRegex(HTTPException, "An initial user already exists") as ctx:
+                bootstrap_admin(self.bootstrap_payload(), setup_token="a" * 32, db=self.db)
+        self.assertEqual(ctx.exception.status_code, 409)
 
     def test_api_routes_have_an_authentication_boundary(self):
         public_paths = {
