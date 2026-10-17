@@ -1,12 +1,14 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 import json
+import secrets
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from .config import settings
 from .billing import router as billing_router
 from .configuration import router as configuration_router
 from .backup import router as backup_router
@@ -99,7 +101,16 @@ def setup_status(db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/bootstrap-admin", response_model=MeResponse, status_code=201)
-def bootstrap_admin(payload: BootstrapAdminRequest, db: Session = Depends(get_db)):
+def bootstrap_admin(
+    payload: BootstrapAdminRequest,
+    setup_token: str | None = Header(default=None, alias="X-HMS-Setup-Token"),
+    db: Session = Depends(get_db),
+):
+    configured_token = settings.bootstrap_token
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="Initial setup is disabled until HMS_BOOTSTRAP_TOKEN is configured")
+    if not setup_token or not secrets.compare_digest(setup_token, configured_token):
+        raise HTTPException(status_code=403, detail="Invalid initial setup token")
     if db.scalar(select(User.id)) is not None:
         raise HTTPException(status_code=409, detail="An initial user already exists")
     role = db.scalar(select(Role).where(Role.name == "admin"))

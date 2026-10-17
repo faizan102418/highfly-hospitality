@@ -37,6 +37,7 @@ uvicorn app.main:app --reload
 Optional environment variables:
 - `HMS_SECRET_KEY` — set a strong random secret for signed access tokens.
 - `HMS_TOKEN_EXPIRE_MINUTES` — token lifetime in minutes; defaults to `480`.
+- `HMS_BOOTSTRAP_TOKEN` — required to create the first administrator; use a random secret of at least 32 characters and enter the same value on the setup screen. Without it, first-admin creation is disabled. Keep it private and remove/change it after the initial setup.
 
 For local development, the web app uses a Vite proxy to `http://127.0.0.1:8000`.
 
