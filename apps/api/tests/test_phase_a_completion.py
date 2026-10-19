@@ -544,5 +544,93 @@ class PhaseACompletionTests(unittest.TestCase):
         )
 
 
+    def test_checkin_rejects_foreign_property_guest_references_without_side_effects(self):
+        other_property = ensure_test_property(self.db)
+        foreign_guest = Guest(property_id=other_property.id, full_name="Foreign check-in guest")
+        self.db.add(foreign_guest)
+        self.db.flush()
+        original_reservation_guest_id = self.reservation.guest_id
+        original_stay_guest_id = self.stay.guest_id
+        before_audits = self.db.query(AuditLog).count()
+        before_transactions = self.db.query(FinancialTransaction).count()
+
+        self.reservation.guest_id = foreign_guest.id
+        self.db.flush()
+
+        with self.assertRaises(HTTPException) as denied:
+            check_in_stay(
+                self.stay.id,
+                StayCheckInPayload(reason="Reject foreign reservation guest"),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertIn("guest", denied.exception.detail.lower())
+        self.assertEqual(self.db.get(Reservation, self.reservation.id).status, "reserved")
+        self.assertEqual(self.db.get(Stay, self.stay.id).status, "reserved")
+        self.assertEqual(self.db.get(Room, self.room.id).status, "reserved")
+        self.assertIsNone(self.db.get(Stay, self.stay.id).actual_check_in)
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+        self.assertEqual(self.db.query(FinancialTransaction).count(), before_transactions)
+
+        self.db.get(Reservation, self.reservation.id).guest_id = original_reservation_guest_id
+        self.db.get(Stay, self.stay.id).guest_id = foreign_guest.id
+        self.db.flush()
+
+        with self.assertRaises(HTTPException) as denied_stay_guest:
+            check_in_stay(
+                self.stay.id,
+                StayCheckInPayload(reason="Reject foreign stay guest"),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(denied_stay_guest.exception.status_code, 409)
+        self.assertIn("guest", denied_stay_guest.exception.detail.lower())
+        self.assertEqual(self.db.get(Reservation, self.reservation.id).status, "reserved")
+        self.assertEqual(self.db.get(Stay, self.stay.id).status, "reserved")
+        self.assertEqual(self.db.get(Room, self.room.id).status, "reserved")
+        self.assertIsNone(self.db.get(Stay, self.stay.id).actual_check_in)
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+        self.assertEqual(self.db.query(FinancialTransaction).count(), before_transactions)
+        self.db.get(Stay, self.stay.id).guest_id = original_stay_guest_id
+
+    def test_checkin_rejects_foreign_property_occupant_without_side_effects(self):
+        other_property = ensure_test_property(self.db)
+        foreign_guest = Guest(property_id=other_property.id, full_name="Foreign occupant at check-in")
+        self.db.add(foreign_guest)
+        self.db.flush()
+        occupant = self.db.scalar(
+            select(StayOccupant).where(
+                StayOccupant.stay_id == self.stay.id,
+                StayOccupant.is_primary.is_(True),
+            )
+        )
+        original_guest_id = occupant.guest_id
+        occupant.guest_id = foreign_guest.id
+        self.db.flush()
+        before_audits = self.db.query(AuditLog).count()
+        before_transactions = self.db.query(FinancialTransaction).count()
+
+        with self.assertRaises(HTTPException) as denied:
+            check_in_stay(
+                self.stay.id,
+                StayCheckInPayload(reason="Reject foreign occupant"),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertIn("guest", denied.exception.detail.lower())
+        self.assertEqual(self.db.get(Reservation, self.reservation.id).status, "reserved")
+        self.assertEqual(self.db.get(Stay, self.stay.id).status, "reserved")
+        self.assertEqual(self.db.get(Room, self.room.id).status, "reserved")
+        self.assertIsNone(self.db.get(Stay, self.stay.id).actual_check_in)
+        self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+        self.assertEqual(self.db.query(FinancialTransaction).count(), before_transactions)
+        self.assertEqual(self.db.get(StayOccupant, occupant.id).guest_id, foreign_guest.id)
+
+
 if __name__ == "__main__":
     unittest.main()
