@@ -143,6 +143,23 @@ def check_in_stay(stay_id: int, payload: StayCheckInPayload | None = None, db: S
         raise HTTPException(status_code=404, detail="Room not found")
     if room.property_id != reservation.property_id:
         raise HTTPException(status_code=409, detail="Stay room belongs to a different property")
+
+    # Imported or legacy rows may have guest/occupant references that bypassed
+    # normal property-scoped creation. Validate every person before changing
+    # room or stay state, matching the stricter checkout boundary.
+    guest_ids = {reservation.guest_id, stay.guest_id}
+    guest_ids.update(
+        db.scalars(
+            select(StayOccupant.guest_id).where(StayOccupant.stay_id == stay.id)
+        ).all()
+    )
+    guest_ids.discard(None)
+    guests = db.scalars(select(Guest).where(Guest.id.in_(guest_ids))).all() if guest_ids else []
+    if len({guest.id for guest in guests}) != len(guest_ids) or any(
+        guest.property_id != reservation.property_id for guest in guests
+    ):
+        raise HTTPException(status_code=409, detail="Stay has a guest assigned to a different property")
+
     if room.status not in {"reserved", "available"}:
         raise HTTPException(status_code=409, detail="Room is not ready for check-in")
     stay.status = "checked_in"
