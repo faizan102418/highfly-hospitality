@@ -545,7 +545,19 @@ class PhaseACompletionTests(unittest.TestCase):
 
 
     def test_checkin_rejects_foreign_property_guest_references_without_side_effects(self):
-        other_property = ensure_test_property(self.db)
+        other_organization = Organization(name=f"Check-in Isolation Org {id(self)}", slug=f"checkin-isolation-org-{id(self)}")
+        self.db.add(other_organization)
+        self.db.flush()
+        other_property = Property(
+            organization_id=other_organization.id,
+            name=f"Check-in Isolation Property {id(self)}",
+            code=f"CHK-{id(self)}",
+            slug=f"checkin-isolation-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
         foreign_guest = Guest(property_id=other_property.id, full_name="Foreign check-in guest")
         self.db.add(foreign_guest)
         self.db.flush()
@@ -597,7 +609,19 @@ class PhaseACompletionTests(unittest.TestCase):
         self.db.get(Stay, self.stay.id).guest_id = original_stay_guest_id
 
     def test_checkin_rejects_foreign_property_occupant_without_side_effects(self):
-        other_property = ensure_test_property(self.db)
+        other_organization = Organization(name=f"Check-in Occupant Isolation Org {id(self)}", slug=f"checkin-occupant-org-{id(self)}")
+        self.db.add(other_organization)
+        self.db.flush()
+        other_property = Property(
+            organization_id=other_organization.id,
+            name=f"Check-in Occupant Isolation Property {id(self)}",
+            code=f"CHKO-{id(self)}",
+            slug=f"checkin-occupant-property-{id(self)}",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
         foreign_guest = Guest(property_id=other_property.id, full_name="Foreign occupant at check-in")
         self.db.add(foreign_guest)
         self.db.flush()
