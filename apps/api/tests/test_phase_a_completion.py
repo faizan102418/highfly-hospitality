@@ -469,5 +469,80 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(self.db.get(Stay, stay.id).status, "checked_in")
 
 
+    def test_successful_checkout_retry_does_not_duplicate_financial_or_audit_writes(self):
+        reservation, stay, folio = self._create_reservation_without_deposit()
+        check_in_stay(
+            stay.id,
+            StayCheckInPayload(reason="Checkout retry safety"),
+            self.db,
+            self.user,
+        )
+        post_accrued_room_charges(
+            self.db,
+            reservation,
+            folio,
+            date(2026, 9, 8),
+            self.user.id,
+        )
+        add_folio_item(
+            folio.id,
+            FolioItemCreate(
+                description="Minibar",
+                category="other",
+                quantity=Decimal("1"),
+                unit_price=Decimal("20.00"),
+                discount=Decimal("0.00"),
+            ),
+            self.db,
+            self.user,
+        )
+        add_payment(
+            folio.id,
+            PaymentCreate(amount=Decimal("170.00"), method="cash", reference="CHECKOUT-RETRY-CASH"),
+            "checkout-retry-payment",
+            self.db,
+            self.user,
+        )
+
+        first = atomic_checkout(reservation.id, self.db, self.user)
+        self.assertEqual(first["status"], "checked_out")
+        before_retry = {
+            "financial_transactions": self.db.query(FinancialTransaction).count(),
+            "folio_items": self.db.query(FolioItem).count(),
+            "payments": self.db.query(Payment).count(),
+            "audit_logs": self.db.query(AuditLog).count(),
+        }
+        before_checkout = {
+            "reservation_status": self.db.get(Reservation, reservation.id).status,
+            "folio_status": self.db.get(Folio, folio.id).status,
+            "stay_status": self.db.get(Stay, stay.id).status,
+            "room_status": self.db.get(Room, stay.room_id).status,
+        }
+
+        with self.assertRaises(HTTPException) as retry:
+            atomic_checkout(reservation.id, self.db, self.user)
+
+        self.assertEqual(retry.exception.status_code, 409)
+        self.assertIn("not checked in", retry.exception.detail)
+        self.assertEqual(
+            {
+                "financial_transactions": self.db.query(FinancialTransaction).count(),
+                "folio_items": self.db.query(FolioItem).count(),
+                "payments": self.db.query(Payment).count(),
+                "audit_logs": self.db.query(AuditLog).count(),
+            },
+            before_retry,
+        )
+        self.assertEqual(
+            {
+                "reservation_status": self.db.get(Reservation, reservation.id).status,
+                "folio_status": self.db.get(Folio, folio.id).status,
+                "stay_status": self.db.get(Stay, stay.id).status,
+                "room_status": self.db.get(Room, stay.room_id).status,
+            },
+            before_checkout,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
