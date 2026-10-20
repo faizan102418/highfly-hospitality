@@ -125,6 +125,48 @@ class PhaseACompletionTests(unittest.TestCase):
         changed = change_stay_occupant_guest(self.stay.id, share["id"], OccupantGuestChange(guest_id=self.guest_usman.id, reason="Guest replacement"), self.db, self.user)
         self.assertEqual(changed["guest_id"], self.guest_usman.id)
 
+    def test_repeated_checkin_rejects_retry_without_duplicate_writes(self):
+        first = check_in_stay(
+            self.stay.id,
+            StayCheckInPayload(reason="Initial check-in"),
+            self.db,
+            self.user,
+        )
+        self.assertEqual(first["status"], "checked_in")
+
+        before = {
+            "stays": self.db.query(Stay).count(),
+            "audits": self.db.query(AuditLog).count(),
+            "financial_transactions": self.db.query(FinancialTransaction).count(),
+            "folio_items": self.db.query(FolioItem).count(),
+            "payments": self.db.query(Payment).count(),
+            "deposits": self.db.query(DepositTransaction).count(),
+        }
+        actual_check_in = self.db.get(Stay, self.stay.id).actual_check_in
+
+        with self.assertRaises(HTTPException) as denied:
+            check_in_stay(
+                self.stay.id,
+                StayCheckInPayload(reason="Retry after simulated timeout"),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertEqual(self.db.get(Stay, self.stay.id).status, "checked_in")
+        self.assertEqual(self.db.get(Reservation, self.reservation.id).status, "checked_in")
+        self.assertEqual(self.db.get(Room, self.room.id).status, "occupied")
+        self.assertEqual(self.db.get(Stay, self.stay.id).actual_check_in, actual_check_in)
+        after = {
+            "stays": self.db.query(Stay).count(),
+            "audits": self.db.query(AuditLog).count(),
+            "financial_transactions": self.db.query(FinancialTransaction).count(),
+            "folio_items": self.db.query(FolioItem).count(),
+            "payments": self.db.query(Payment).count(),
+            "deposits": self.db.query(DepositTransaction).count(),
+        }
+        self.assertEqual(after, before)
+
     def test_deposit_transfer_refund_and_apply_to_folio(self):
         other_reservation = Reservation(property_id=self.property.id, guest_id=self.guest_ahmed.id, check_in=date(2026, 9, 8), check_out=date(2026, 9, 12), status="reserved")
         self.db.add(other_reservation)
