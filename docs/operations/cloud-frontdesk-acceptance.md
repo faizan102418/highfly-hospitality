@@ -1,6 +1,6 @@
 # Cloud first-client release gate — front desk acceptance
 
-This checklist complements automated CI for the first-client front-desk scope. A checked box means the step was performed in an isolated demo/test property and evidence recorded; CI success alone does not complete a manual item.
+This checklist complements automated CI for the first-client front-desk scope. A checked box means the step was performed in an isolated demo/test property and evidence recorded; CI success alone does not complete a manual item. Use the [front-desk acceptance evidence template](frontdesk-acceptance-evidence-template.md) to capture the candidate SHA, tester/environment, per-gate results, reconciliation totals, restore evidence, and release decision.
 
 ## Safety and test setup
 
