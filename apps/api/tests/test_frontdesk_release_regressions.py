@@ -12,9 +12,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import engine
-from app.main import check_in_reservation, check_out_reservation, create_reservation, transfer_room
+from app.main import check_in_reservation, check_out_reservation, create_reservation, transfer_room, list_guests, update_guest
 from app.models import BusinessDateState, Folio, FolioItem, FinancialTransaction, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, User
-from app.schemas import ReservationCreate, RoomTransferRequest
+from app.schemas import GuestCreate, ReservationCreate, RoomTransferRequest
 from app.housekeeping_control import HousekeepingTaskCreate, create_task, start_task, complete_task
 from app.billing import PaymentCreate, FolioItemCreate, add_folio_item, add_payment, get_folio
 from app.reservation_workflows import (
@@ -244,8 +244,21 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
             db.add_all([foreign_link, foreign_stay, foreign_folio])
             db.flush()
 
-            reservation_count_before = db.scalar(select(__import__("sqlalchemy").func.count(Reservation.id)))
+            visible_guests = list_guests(None, 20, db, user)
+            self.assertIn(allowed_guest.id, {guest.id for guest in visible_guests})
+            self.assertNotIn(foreign_guest.id, {guest.id for guest in visible_guests})
+            reservation_count_before = db.scalar(select(func.count(Reservation.id)))
             denied_calls = (
+                (
+                    "foreign guest update",
+                    lambda: update_guest(
+                        foreign_guest.id,
+                        GuestCreate(full_name="Unauthorized edit", phone="03011111111"),
+                        db,
+                        user,
+                    ),
+                    404,
+                ),
                 ("foreign reservation read/check-in", lambda: check_in_reservation(foreign_reservation.id, db, user), 404),
                 ("foreign reservation checkout", lambda: check_out_reservation(foreign_reservation.id, db, user), 403),
                 ("foreign stay read", lambda: authorized_stay_or_404(foreign_stay.id, db, user.id), 403),
@@ -317,7 +330,7 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
 
             db.flush()
             self.assertEqual(
-                db.scalar(select(__import__("sqlalchemy").func.count(Reservation.id))),
+                db.scalar(select(func.count(Reservation.id))),
                 reservation_count_before,
                 "denied front-desk actions must not create reservations",
             )
