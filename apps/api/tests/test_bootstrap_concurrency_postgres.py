@@ -12,6 +12,7 @@ from app.db import Base, engine
 from app.main import bootstrap_admin
 from app.models import Role, User
 from app.schemas import BootstrapAdminRequest
+from app.tenancy import Organization, Property
 
 
 class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
@@ -81,8 +82,8 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
                 with Session(bind=connection) as db:
                     self.assertEqual(db.scalar(select(User.id).limit(1)) is not None, True)
                     self.assertEqual(len(db.scalars(select(User.id)).all()), 1)
-                    self.assertEqual(len(db.scalars(select(__import__("app.tenancy", fromlist=["Organization"]).Organization.id)).all()), 1)
-                    self.assertEqual(len(db.scalars(select(__import__("app.tenancy", fromlist=["Property"]).Property.id)).all()), 1)
+                    self.assertEqual(len(db.scalars(select(Organization.id)).all()), 1)
+                    self.assertEqual(len(db.scalars(select(Property.id)).all()), 1)
         finally:
             with engine.connect() as connection:
                 connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
