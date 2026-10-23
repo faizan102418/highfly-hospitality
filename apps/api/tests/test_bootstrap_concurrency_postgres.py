@@ -27,6 +27,7 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
             connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
             connection.exec_driver_sql(f'SET search_path TO "{schema}"')
             Base.metadata.create_all(bind=connection)
+            connection.commit()
             with Session(bind=connection) as db:
                 db.add(Role(name="admin"))
                 db.commit()
@@ -53,6 +54,7 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
             try:
                 with engine.connect() as connection:
                     connection.exec_driver_sql(f'SET search_path TO "{schema}"')
+                    connection.commit()
                     with Session(bind=connection) as db:
                         barrier.wait(timeout=10)
                         result = bootstrap_admin(payload, setup_token="bootstrap-test-token", db=db)
@@ -79,6 +81,7 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
 
             with engine.connect() as connection:
                 connection.exec_driver_sql(f'SET search_path TO "{schema}"')
+                connection.commit()
                 with Session(bind=connection) as db:
                     self.assertEqual(db.scalar(select(User.id).limit(1)) is not None, True)
                     self.assertEqual(len(db.scalars(select(User.id)).all()), 1)
