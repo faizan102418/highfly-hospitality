@@ -83,6 +83,28 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
             db.add_all([allowed_room, foreign_room])
             db.flush()
 
+            allowed_reservation = Reservation(
+                property_id=allowed_property.id,
+                guest_id=allowed_guest.id,
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 3),
+                status="checked_in",
+            )
+            allowed_room.status = "occupied"
+            db.add(allowed_reservation)
+            db.flush()
+            db.add(ReservationRoom(reservation_id=allowed_reservation.id, room_id=allowed_room.id))
+            db.add(Stay(
+                reservation_id=allowed_reservation.id,
+                room_id=allowed_room.id,
+                guest_id=allowed_guest.id,
+                status="checked_in",
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 3),
+                agreed_rate=Decimal("100.00"),
+            ))
+            db.flush()
+
             foreign_reservation = Reservation(
                 property_id=other_property.id,
                 guest_id=foreign_guest.id,
@@ -153,8 +175,8 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
                 (
                     "foreign destination room transfer",
                     lambda: transfer_room(
-                        foreign_reservation.id,
-                        RoomTransferRequest(from_room_id=foreign_room.id, to_room_id=allowed_room.id),
+                        allowed_reservation.id,
+                        RoomTransferRequest(from_room_id=allowed_room.id, to_room_id=foreign_room.id),
                         db,
                         user,
                     ),
