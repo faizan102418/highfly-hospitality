@@ -287,7 +287,7 @@ def _guest_identifier(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
-def _guest_duplicate_matches(db: Session, payload: GuestCreate, exclude_guest_id: int | None = None) -> list[Guest]:
+def _guest_duplicate_matches(db: Session, payload: GuestCreate, property_id: int, exclude_guest_id: int | None = None) -> list[Guest]:
     phone = _guest_identifier(payload.phone)
     id_document = _guest_identifier(payload.id_document)
     if not phone and not id_document:
@@ -299,7 +299,7 @@ def _guest_duplicate_matches(db: Session, payload: GuestCreate, exclude_guest_id
     if id_document:
         conditions.append(func.lower(Guest.id_document) == id_document)
 
-    stmt = select(Guest).where(conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]).order_by(Guest.full_name).limit(10)
+    stmt = select(Guest).where(Guest.property_id == property_id, conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]).order_by(Guest.full_name).limit(10)
     if exclude_guest_id is not None:
         stmt = stmt.where(Guest.id != exclude_guest_id)
     return db.scalars(stmt).all()
@@ -385,13 +385,13 @@ def guest_duplicate_check(
 ):
     property_ = resolve_authorized_property(db, _.id)
     payload = GuestCreate(full_name="Duplicate check", phone=phone, id_document=id_document)
-    return [g for g in _guest_duplicate_matches(db, payload, exclude_guest_id=exclude_guest_id) if g.property_id == property_.id]
+    return [g for g in _guest_duplicate_matches(db, payload, property_.id, exclude_guest_id=exclude_guest_id) if g.property_id == property_.id]
 
 
 @app.post("/api/guests", response_model=GuestResponse, status_code=201)
 def create_guest(payload: GuestCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    _raise_guest_duplicate_warning([g for g in _guest_duplicate_matches(db, payload) if g.property_id == property_.id])
+    _raise_guest_duplicate_warning([g for g in _guest_duplicate_matches(db, payload, property_.id)])
     guest = Guest(property_id=property_.id, **payload.model_dump()); db.add(guest); db.flush()
     write_audit(db, "create", "guest", guest.id, {"full_name": guest.full_name}, user.id)
     db.commit(); db.refresh(guest); return guest
@@ -405,7 +405,7 @@ def update_guest(guest_id: int, payload: GuestCreate, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Guest not found")
     _raise_guest_duplicate_warning([
         match
-        for match in _guest_duplicate_matches(db, payload, exclude_guest_id=guest_id)
+        for match in _guest_duplicate_matches(db, payload, property_.id, exclude_guest_id=guest_id)
         if match.property_id == property_.id
     ])
     values = payload.model_dump()
