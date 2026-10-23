@@ -55,14 +55,17 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
         def attempt(payload):
             try:
                 with engine.connect() as connection:
-                    connection.exec_driver_sql(f'SET search_path TO "{schema}"')
-                    connection.commit()
-                    with Session(bind=connection) as db:
-                        barrier.wait(timeout=10)
-                        result = bootstrap_admin(payload, setup_token="bootstrap-test-token", db=db)
-                        outcome = ("created", result.username)
-                    connection.exec_driver_sql("SET search_path TO public")
-                    connection.commit()
+                    try:
+                        connection.exec_driver_sql(f'SET search_path TO "{schema}"')
+                        connection.commit()
+                        with Session(bind=connection) as db:
+                            barrier.wait(timeout=10)
+                            result = bootstrap_admin(payload, setup_token="bootstrap-test-token", db=db)
+                            outcome = ("created", result.username)
+                    finally:
+                        connection.rollback()
+                        connection.exec_driver_sql("SET search_path TO public")
+                        connection.commit()
             except HTTPException as exc:
                 outcome = ("rejected", exc.status_code)
             except Exception as exc:  # surface unexpected thread failures to the assertion below
