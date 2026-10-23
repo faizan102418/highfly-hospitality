@@ -367,21 +367,34 @@ def update_guest(guest_id: int, payload: GuestCreate, db: Session = Depends(get_
     guest = db.scalar(select(Guest).where(Guest.id == guest_id, Guest.property_id == property_.id))
     if not guest:
         raise HTTPException(status_code=404, detail="Guest not found")
-    _raise_guest_duplicate_warning(_guest_duplicate_matches(db, payload, exclude_guest_id=guest_id))
-    old = {
-        "full_name": guest.full_name,
-        "phone": guest.phone,
-        "email": guest.email,
-        "address": guest.address,
-        "id_document": guest.id_document,
-    }
+    _raise_guest_duplicate_warning([
+        match
+        for match in _guest_duplicate_matches(db, payload, exclude_guest_id=guest_id)
+        if match.property_id == property_.id
+    ])
     values = payload.model_dump()
+    changed_fields = [
+        field
+        for field in ("full_name", "phone", "email", "address", "id_document")
+        if getattr(guest, field) != values[field]
+    ]
     guest.full_name = values["full_name"]
     guest.phone = values["phone"]
     guest.email = values["email"]
     guest.address = values["address"]
     guest.id_document = values["id_document"]
-    write_audit(db, "update", "guest", guest.id, {"from": old, "to": values}, user.id)
+    # Audit the changed field names, not guest PII or ID-document values.
+    write_audit(
+        db,
+        "update",
+        "guest",
+        guest.id,
+        {
+            "changed_fields": changed_fields,
+            "id_document_changed": "id_document" in changed_fields,
+        },
+        user.id,
+    )
     db.commit(); db.refresh(guest); return guest
 
 
