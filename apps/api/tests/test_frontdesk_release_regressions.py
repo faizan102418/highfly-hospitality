@@ -3,19 +3,20 @@
 These integration tests run only against the disposable PostgreSQL CI database.
 """
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import engine
 from app.main import check_in_reservation, check_out_reservation, create_reservation, transfer_room
-from app.models import Folio, Guest, Reservation, ReservationRoom, Role, Room, RoomType, User
+from app.models import BusinessDateState, Folio, FolioItem, FinancialTransaction, Guest, Payment, Reservation, ReservationRoom, Role, Room, RoomType, User
 from app.schemas import ReservationCreate, RoomTransferRequest
-from app.billing import PaymentCreate, add_payment, get_folio
+from app.housekeeping_control import HousekeepingTaskCreate, create_task, start_task, complete_task
+from app.billing import PaymentCreate, FolioItemCreate, add_folio_item, add_payment, get_folio
 from app.reservation_workflows import (
     ReservationRoomSetup,
     ReservationWorkflowCreate,
@@ -33,6 +34,121 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
     def setUpClass(cls):
         if engine.dialect.name != "postgresql":
             raise unittest.SkipTest("HMS_DATABASE_URL is not PostgreSQL")
+
+    def test_synthetic_reservation_payment_checkout_and_housekeeping_flow(self):
+        suffix = uuid4().hex[:10]
+        with Session(engine) as db:
+            property_ = ensure_test_property(db)
+            role = db.scalar(select(Role).where(Role.name == "admin"))
+            if role is None:
+                role = Role(name="admin")
+                db.add(role)
+                db.flush()
+            user = User(username=f"frontdesk-e2e-{suffix}", password_hash="test", role_id=role.id)
+            db.add(user)
+            db.flush()
+            db.add(PropertyUserAccess(
+                user_id=user.id,
+                property_id=property_.id,
+                access_scope="property",
+                is_primary=True,
+            ))
+            if db.scalar(select(BusinessDateState.id).where(BusinessDateState.property_id == property_.id)) is None:
+                db.add(BusinessDateState(property_id=property_.id, current_business_date=date.today()))
+            guest = Guest(property_id=property_.id, full_name=f"Synthetic E2E {suffix}", phone=f"030{suffix[:8]}")
+            room_type = RoomType(property_id=property_.id, name=f"E2E type {suffix}", base_rate=Decimal("100.00"))
+            db.add_all([guest, room_type])
+            db.flush()
+            room = Room(property_id=property_.id, number=f"E2E-{suffix}", room_type_id=room_type.id, status="available")
+            db.add(room)
+            db.commit()
+
+            reservation = create_reservation(
+                ReservationCreate(
+                    guest_id=guest.id,
+                    check_in=date.today(),
+                    check_out=date.today() + timedelta(days=1),
+                    room_ids=[room.id],
+                ),
+                db,
+                user,
+            )
+            reservation_id = reservation.id
+            folio_id = reservation.folio_id
+            self.assertEqual(reservation.status, "reserved")
+
+            checked_in = check_in_reservation(reservation_id, db, user)
+            self.assertEqual(checked_in.status, "checked_in")
+            with self.assertRaises(HTTPException) as repeated_checkin:
+                check_in_reservation(reservation_id, db, user)
+            self.assertEqual(repeated_checkin.exception.status_code, 409)
+
+            charge = add_folio_item(
+                folio_id,
+                FolioItemCreate(
+                    description="Synthetic room service",
+                    category="other",
+                    quantity=Decimal("1.00"),
+                    unit_price=Decimal("100.00"),
+                    discount=Decimal("0.00"),
+                ),
+                db,
+                user,
+            )
+            self.assertEqual(Decimal(charge.line_total), Decimal("100.00"))
+
+            with self.assertRaises(HTTPException) as unsettled_checkout:
+                check_out_reservation(reservation_id, db, user)
+            self.assertEqual(unsettled_checkout.exception.status_code, 409)
+            self.assertEqual(db.get(Reservation, reservation_id).status, "checked_in")
+            self.assertEqual(db.get(Folio, folio_id).status, "open")
+
+            payment_payload = PaymentCreate(amount=Decimal("100.00"), method="cash", reference=f"SYN-{suffix}")
+            payment = add_payment(folio_id, payment_payload, f"e2e-{suffix}", db, user)
+            replay = add_payment(folio_id, payment_payload, f"e2e-{suffix}", db, user)
+            self.assertEqual(payment.id, replay.id)
+            self.assertEqual(
+                db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == folio_id)),
+                1,
+            )
+            summary = get_folio(folio_id, db, user)
+            self.assertEqual(Decimal(summary.total), Decimal("100.00"))
+            self.assertEqual(Decimal(summary.paid), Decimal("100.00"))
+            self.assertEqual(Decimal(summary.balance), Decimal("0.00"))
+
+            checked_out = check_out_reservation(reservation_id, db, user)
+            self.assertEqual(checked_out.status, "checked_out")
+            self.assertEqual(db.get(Folio, folio_id).status, "closed")
+            self.assertEqual(db.get(Room, room.id).status, "dirty")
+            with self.assertRaises(HTTPException) as repeated_checkout:
+                check_out_reservation(reservation_id, db, user)
+            self.assertEqual(repeated_checkout.exception.status_code, 409)
+            self.assertEqual(
+                db.scalar(select(func.count(Payment.id)).where(Payment.folio_id == folio_id)),
+                1,
+            )
+
+            task = create_task(
+                room.id,
+                HousekeepingTaskCreate(task_type="checkout_clean", reason="Synthetic checkout handoff"),
+                db,
+                user,
+            )
+            started = start_task(task["id"], db, user)
+            self.assertEqual(started["status"], "in_progress")
+            completed = complete_task(task["id"], db, user)
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(db.get(Room, room.id).status, "available")
+
+            ledger_transactions = db.scalars(
+                select(FinancialTransaction).where(FinancialTransaction.folio_id == folio_id)
+            ).all()
+            self.assertTrue(ledger_transactions, "charge/payment must post to the authoritative ledger")
+            self.assertEqual(
+                db.scalar(select(func.count(FolioItem.id)).where(FolioItem.folio_id == folio_id)),
+                1,
+            )
+            db.rollback()
 
     def test_cross_property_frontdesk_reads_writes_and_references_are_denied(self):
         suffix = uuid4().hex[:10]
