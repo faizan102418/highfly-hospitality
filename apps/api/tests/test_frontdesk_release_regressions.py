@@ -25,6 +25,7 @@ from app.reservation_workflows import (
     ReservationUpdate,
 )
 from app.pms_core import Stay
+from app.phase_a_workflows import stay_or_404 as authorized_stay_or_404
 from app.tenancy import Organization, Property, PropertyUserAccess
 from tenant_test_support import ensure_test_property
 
@@ -206,7 +207,6 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
                 check_out=date(2026, 10, 3),
                 status="checked_in",
             )
-            allowed_room.status = "occupied"
             db.add(allowed_reservation)
             db.flush()
             db.add(ReservationRoom(reservation_id=allowed_reservation.id, room_id=allowed_room.id))
@@ -231,14 +231,24 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
             db.add(foreign_reservation)
             db.flush()
             foreign_link = ReservationRoom(reservation_id=foreign_reservation.id, room_id=foreign_room.id)
+            foreign_stay = Stay(
+                reservation_id=foreign_reservation.id,
+                room_id=foreign_room.id,
+                guest_id=foreign_guest.id,
+                status="reserved",
+                check_in=date(2026, 10, 1),
+                check_out=date(2026, 10, 3),
+                agreed_rate=Decimal("100.00"),
+            )
             foreign_folio = Folio(reservation_id=foreign_reservation.id, status="open")
-            db.add_all([foreign_link, foreign_folio])
+            db.add_all([foreign_link, foreign_stay, foreign_folio])
             db.flush()
 
             reservation_count_before = db.scalar(select(__import__("sqlalchemy").func.count(Reservation.id)))
             denied_calls = (
                 ("foreign reservation read/check-in", lambda: check_in_reservation(foreign_reservation.id, db, user), 404),
                 ("foreign reservation checkout", lambda: check_out_reservation(foreign_reservation.id, db, user), 404),
+                ("foreign stay read", lambda: authorized_stay_or_404(foreign_stay.id, db, user.id), 403),
                 ("foreign folio read", lambda: get_folio(foreign_folio.id, db, user), 404),
                 ("foreign folio payment", lambda: add_payment(foreign_folio.id, PaymentCreate(amount=Decimal("1.00"), method="cash"), None, db, user), 404),
                 (
