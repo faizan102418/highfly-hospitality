@@ -11,6 +11,7 @@ import app.pms_core  # noqa: F401
 from app.main import create_guest, list_guests, update_guest
 from app.models import AuditLog, Guest, Role, User
 from app.schemas import GuestCreate
+from app.tenancy import Organization, Property
 
 
 class GuestProfileTests(unittest.TestCase):
@@ -92,6 +93,69 @@ class GuestProfileTests(unittest.TestCase):
         with self.assertRaises(Exception) as context:
             update_guest(1, payload, self.db, self.user)
         self.assertEqual(getattr(context.exception, "status_code", None), 409)
+
+
+    def test_guest_update_ignores_duplicate_identity_in_another_property(self):
+        organization = Organization(
+            name="Other Organization",
+            slug="other-org-guest-privacy",
+        )
+        self.db.add(organization)
+        self.db.flush()
+        other_property = Property(
+            organization_id=organization.id,
+            name="Other Property",
+            code="OTHER-GUEST-PRIVACY",
+            slug="other-property-guest-privacy",
+            timezone="UTC",
+            currency="PKR",
+        )
+        self.db.add(other_property)
+        self.db.flush()
+        self.db.add(
+            Guest(
+                property_id=other_property.id,
+                full_name="Foreign Guest",
+                phone="03999999999",
+                id_document="FOREIGN-ID",
+            )
+        )
+        self.db.commit()
+
+        payload = GuestCreate(
+            full_name="Updated Guest",
+            phone="03999999999",
+            email="updated@example.com",
+            address="New address",
+            id_document="NEW-ID",
+        )
+        updated = update_guest(1, payload, self.db, self.user)
+
+        self.assertEqual(updated.property_id, self.property.id)
+        self.assertEqual(updated.phone, "03999999999")
+
+    def test_guest_update_audit_never_stores_id_document_values(self):
+        payload = GuestCreate(
+            full_name="Updated Guest",
+            phone="03111111111",
+            email="updated@example.com",
+            address="New address",
+            id_document="NEW-SECRET-ID",
+        )
+        update_guest(1, payload, self.db, self.user)
+
+        audit = self.db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "update",
+                AuditLog.entity_type == "guest",
+                AuditLog.entity_id == "1",
+            ).order_by(AuditLog.id.desc()).limit(1)
+        )
+        self.assertIsNotNone(audit)
+        self.assertIn('"id_document_changed": true', audit.details)
+        self.assertNotIn("OLD-ID", audit.details)
+        self.assertNotIn("NEW-SECRET-ID", audit.details)
+        self.assertNotIn("id_document", audit.details.split('"changed_fields":')[1].split("]")[0])
 
     def test_guest_profile_update_rejects_unknown_guest(self):
         payload = GuestCreate(full_name="Updated Guest")
