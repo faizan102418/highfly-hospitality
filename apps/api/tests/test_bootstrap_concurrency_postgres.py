@@ -5,7 +5,7 @@ from uuid import uuid4
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine
@@ -31,6 +31,8 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
             with Session(bind=connection) as db:
                 db.add(Role(name="admin"))
                 db.commit()
+            connection.exec_driver_sql("SET search_path TO public")
+            connection.commit()
 
         barrier = threading.Barrier(2)
         results = []
@@ -59,6 +61,8 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
                         barrier.wait(timeout=10)
                         result = bootstrap_admin(payload, setup_token="bootstrap-test-token", db=db)
                         outcome = ("created", result.username)
+                    connection.exec_driver_sql("SET search_path TO public")
+                    connection.commit()
             except HTTPException as exc:
                 outcome = ("rejected", exc.status_code)
             except Exception as exc:  # surface unexpected thread failures to the assertion below
@@ -87,6 +91,8 @@ class BootstrapConcurrencyPostgreSQLTests(unittest.TestCase):
                     self.assertEqual(len(db.scalars(select(User.id)).all()), 1)
                     self.assertEqual(len(db.scalars(select(Organization.id)).all()), 1)
                     self.assertEqual(len(db.scalars(select(Property.id)).all()), 1)
+                connection.exec_driver_sql("SET search_path TO public")
+                connection.commit()
         finally:
             with engine.connect() as connection:
                 connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
