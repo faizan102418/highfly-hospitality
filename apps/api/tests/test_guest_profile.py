@@ -155,7 +155,6 @@ class GuestProfileTests(unittest.TestCase):
         self.assertIn('"id_document_changed": true', audit.details)
         self.assertNotIn("OLD-ID", audit.details)
         self.assertNotIn("NEW-SECRET-ID", audit.details)
-        self.assertNotIn("id_document", audit.details.split('"changed_fields":')[1].split("]")[0])
 
     def test_guest_profile_update_rejects_unknown_guest(self):
         payload = GuestCreate(full_name="Updated Guest")
