@@ -158,5 +158,53 @@ class TenancyFoundationTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 403)
 
 
+    def test_revoked_property_access_cannot_resolve_property(self):
+        suffix = uuid4().hex[:10]
+        with Session(self.engine) as db:
+            role = Role(name=f"revoked-admin-{suffix}")
+            db.add(role)
+            db.flush()
+            user = User(
+                username=f"revoked-access-user-{suffix}",
+                password_hash="test",
+                role_id=role.id,
+            )
+            org = Organization(
+                name=f"Revocation organization {suffix}",
+                slug=f"revocation-org-{suffix}",
+            )
+            db.add_all([user, org])
+            db.flush()
+            property_ = Property(
+                organization_id=org.id,
+                name=f"Revocation property {suffix}",
+                code=f"RV-{suffix}",
+                slug=f"revocation-property-{suffix}",
+            )
+            db.add(property_)
+            db.flush()
+            access = PropertyUserAccess(
+                user_id=user.id,
+                property_id=property_.id,
+                access_scope="property",
+                is_primary=True,
+            )
+            db.add(access)
+            db.commit()
+
+            self.assertEqual(
+                resolve_authorized_property(db, user.id, property_.id).id,
+                property_.id,
+            )
+
+            # Membership revocation takes effect on the next authorization check;
+            # a previously valid user/property pair must not remain authorized.
+            db.delete(access)
+            db.commit()
+            with self.assertRaises(HTTPException) as raised:
+                resolve_authorized_property(db, user.id, property_.id)
+            self.assertEqual(raised.exception.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
