@@ -261,7 +261,7 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
                 ),
                 ("foreign reservation read/check-in", lambda: check_in_reservation(foreign_reservation.id, db, user), 404),
                 ("foreign reservation checkout", lambda: check_out_reservation(foreign_reservation.id, db, user), 403),
-                ("foreign stay read", lambda: authorized_stay_or_404(foreign_stay.id, db, user.id), 403),
+                ("foreign stay read", lambda: authorized_stay_or_404(db, foreign_stay.id, user.id), 403),
                 ("foreign folio read", lambda: get_folio(foreign_folio.id, db, user), 404),
                 ("foreign folio payment", lambda: add_payment(foreign_folio.id, PaymentCreate(amount=Decimal("1.00"), method="cash"), None, db, user), 404),
                 (
