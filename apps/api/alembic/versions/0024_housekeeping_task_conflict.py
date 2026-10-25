@@ -1,5 +1,5 @@
 """Make automatic checkout housekeeping creation safe under duplicate handoffs."""
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 revision = "0024_housekeeping_task_conflict"
@@ -9,6 +9,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # This migration replaces a PostgreSQL trigger function; SQLite has no equivalent.
+    if context.get_context().dialect.name != "postgresql":
+        return
     op.execute(sa.text("""
         CREATE OR REPLACE FUNCTION hms_auto_housekeeping_task_for_dirty_room()
         RETURNS trigger LANGUAGE plpgsql AS $$
