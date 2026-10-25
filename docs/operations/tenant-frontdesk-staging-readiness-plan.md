@@ -40,6 +40,9 @@ Unknown, unrun, or blocked means not passed. The evidence template is the record
 
 ## 4. Cloud staging verification
 
+Follow [`render-staging-provisioning-runbook.md`](render-staging-provisioning-runbook.md) for the Render resource provisioning, database attachment, secret isolation, and manual readiness workflow procedure. A green smoke workflow is not proof of the database resource identity; verify the attachment in Render itself.
+
+
 Before test data is entered:
 
 - [ ] Provider control plane confirms staging service and separate PostgreSQL resource are provisioned.
