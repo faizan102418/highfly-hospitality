@@ -11,6 +11,9 @@ These are useful code-level checks, not proof that the deployed cloud service is
 
 ## Staging configuration boundary
 
+Provisioning and control-plane verification steps are maintained in [`render-staging-provisioning-runbook.md`](render-staging-provisioning-runbook.md). The manual [Staging readiness smoke check workflow](../../.github/workflows/staging-readiness-smoke.yml) checks the staging readiness endpoint after an authorized operator deploys and migrates the isolated staging candidate; it does not replace provider-side database-identity verification.
+
+
 The checked-in `render.staging.yaml` declares a staging web service and a separately named PostgreSQL resource (`highfly-hospitality-staging-db` / `highfly_hospitality_staging`). This PR disables commit-triggered staging auto-deploy and removes `alembic upgrade head` from the build command so that a code commit/build does not implicitly deploy or migrate the staging database.
 
 **This YAML is not evidence that Render has provisioned either resource.** The service may need to be created/updated by an authorized operator in the provider control plane. Provisioning, deployment, and migrations remain explicit operator actions. Before any migration, verify the target database, review migration impact, and obtain approval from the authorized operator.
