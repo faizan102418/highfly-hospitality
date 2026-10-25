@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 import json
 import secrets
@@ -111,31 +112,67 @@ def bootstrap_admin(
         raise HTTPException(status_code=503, detail="Initial setup is disabled until HMS_BOOTSTRAP_TOKEN is configured")
     if not setup_token or not secrets.compare_digest(setup_token, configured_token):
         raise HTTPException(status_code=403, detail="Invalid initial setup token")
-    if db.scalar(select(User.id)) is not None:
-        raise HTTPException(status_code=409, detail="An initial user already exists")
-    role = db.scalar(select(Role).where(Role.name == "admin"))
+
+    # Serialize first-admin attempts on the pre-existing admin role row. On
+    # PostgreSQL, SELECT FOR UPDATE holds this lock until commit/rollback, so a
+    # concurrent request must re-check the users table after the winner commits.
+    # The row exists before bootstrap (created by normal startup/schema setup).
+    role = db.scalar(select(Role).where(Role.name == "admin").with_for_update())
     if not role:
         raise HTTPException(status_code=500, detail="Admin role is not configured")
-    user = User(username=payload.username, password_hash=hash_password(payload.password), role_id=role.id)
-    db.add(user); db.flush()
+    if db.scalar(select(User.id).limit(1)) is not None:
+        raise HTTPException(status_code=409, detail="An initial user already exists")
+
+    # Validate existing tenant slugs before creating/flushing the user. Expected
+    # conflicts therefore cannot leave uncommitted bootstrap rows in a caller's
+    # still-open Session, and all provisioning remains in one transaction.
     from .tenancy import Organization, Property, PropertyUserAccess
     organization = db.scalar(select(Organization).where(Organization.slug == payload.organization_slug))
+    if organization is not None and organization.name != payload.organization_name.strip():
+        raise HTTPException(status_code=409, detail="Organization slug already exists with a different name")
+
+    property_ = None
+    if organization is not None:
+        property_ = db.scalar(select(Property).where(
+            Property.organization_id == organization.id,
+            Property.slug == payload.property_slug,
+        ))
+        if property_ is not None and (
+            property_.name != payload.property_name.strip()
+            or property_.code != payload.property_code
+            or property_.timezone != payload.timezone
+            or property_.currency != payload.currency.upper()
+        ):
+            raise HTTPException(status_code=409, detail="Property slug already exists with different configuration")
+
+    user = User(username=payload.username, password_hash=hash_password(payload.password), role_id=role.id)
+    db.add(user)
+    db.flush()
     if organization is None:
         organization = Organization(name=payload.organization_name.strip(), slug=payload.organization_slug)
-        db.add(organization); db.flush()
-    elif organization.name != payload.organization_name.strip():
-        raise HTTPException(status_code=409, detail="Organization slug already exists with a different name")
-    property_ = db.scalar(select(Property).where(Property.organization_id == organization.id, Property.slug == payload.property_slug))
+        db.add(organization)
+        db.flush()
     if property_ is None:
-        property_ = Property(organization_id=organization.id, name=payload.property_name.strip(), code=payload.property_code, slug=payload.property_slug, timezone=payload.timezone, currency=payload.currency.upper())
-        db.add(property_); db.flush()
-    elif property_.name != payload.property_name.strip() or property_.code != payload.property_code or property_.timezone != payload.timezone or property_.currency != payload.currency.upper():
-        raise HTTPException(status_code=409, detail="Property slug already exists with different configuration")
+        property_ = Property(
+            organization_id=organization.id,
+            name=payload.property_name.strip(),
+            code=payload.property_code,
+            slug=payload.property_slug,
+            timezone=payload.timezone,
+            currency=payload.currency.upper(),
+        )
+        db.add(property_)
+        db.flush()
+
     db.add(PropertyUserAccess(user_id=user.id, property_id=property_.id, access_scope="organization", is_primary=True))
     business_date = datetime.now(ZoneInfo(property_.timezone)).date()
     db.add(BusinessDateState(property_id=property_.id, current_business_date=business_date))
     db.add(InvoiceSequence(property_id=property_.id, last_number=0))
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return MeResponse(id=user.id, username=user.username, role=role.name)
 
 
@@ -251,7 +288,7 @@ def _guest_identifier(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
-def _guest_duplicate_matches(db: Session, payload: GuestCreate, exclude_guest_id: int | None = None) -> list[Guest]:
+def _guest_duplicate_matches(db: Session, payload: GuestCreate, property_id: int, exclude_guest_id: int | None = None) -> list[Guest]:
     phone = _guest_identifier(payload.phone)
     id_document = _guest_identifier(payload.id_document)
     if not phone and not id_document:
@@ -263,7 +300,7 @@ def _guest_duplicate_matches(db: Session, payload: GuestCreate, exclude_guest_id
     if id_document:
         conditions.append(func.lower(Guest.id_document) == id_document)
 
-    stmt = select(Guest).where(conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]).order_by(Guest.full_name).limit(10)
+    stmt = select(Guest).where(Guest.property_id == property_id, conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]).order_by(Guest.full_name).limit(10)
     if exclude_guest_id is not None:
         stmt = stmt.where(Guest.id != exclude_guest_id)
     return db.scalars(stmt).all()
@@ -349,13 +386,13 @@ def guest_duplicate_check(
 ):
     property_ = resolve_authorized_property(db, _.id)
     payload = GuestCreate(full_name="Duplicate check", phone=phone, id_document=id_document)
-    return [g for g in _guest_duplicate_matches(db, payload, exclude_guest_id=exclude_guest_id) if g.property_id == property_.id]
+    return [g for g in _guest_duplicate_matches(db, payload, property_.id, exclude_guest_id=exclude_guest_id) if g.property_id == property_.id]
 
 
 @app.post("/api/guests", response_model=GuestResponse, status_code=201)
 def create_guest(payload: GuestCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    _raise_guest_duplicate_warning([g for g in _guest_duplicate_matches(db, payload) if g.property_id == property_.id])
+    _raise_guest_duplicate_warning([g for g in _guest_duplicate_matches(db, payload, property_.id)])
     guest = Guest(property_id=property_.id, **payload.model_dump()); db.add(guest); db.flush()
     write_audit(db, "create", "guest", guest.id, {"full_name": guest.full_name}, user.id)
     db.commit(); db.refresh(guest); return guest
@@ -369,7 +406,7 @@ def update_guest(guest_id: int, payload: GuestCreate, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Guest not found")
     _raise_guest_duplicate_warning([
         match
-        for match in _guest_duplicate_matches(db, payload, exclude_guest_id=guest_id)
+        for match in _guest_duplicate_matches(db, payload, property_.id, exclude_guest_id=guest_id)
         if match.property_id == property_.id
     ])
     values = payload.model_dump()

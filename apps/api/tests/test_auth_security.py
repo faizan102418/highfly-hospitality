@@ -12,6 +12,7 @@ from app.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_use
 from app.db import Base
 from app.main import app, bootstrap_admin
 from app.models import Role, User
+from app.tenancy import Organization
 from app.schemas import BootstrapAdminRequest
 
 
@@ -157,6 +158,26 @@ class AuthSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(HTTPException, "An initial user already exists") as ctx:
                 bootstrap_admin(self.bootstrap_payload(), setup_token="a" * 32, db=self.db)
         self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_bootstrap_validates_tenant_conflicts_before_creating_first_user(self):
+        self.db.delete(self.user)
+        self.db.add(Organization(name="Existing organization", slug="test-organization"))
+        self.db.commit()
+
+        with patch("app.main.settings.bootstrap_token", "a" * 32):
+            with self.assertRaisesRegex(HTTPException, "different name") as ctx:
+                bootstrap_admin(
+                    self.bootstrap_payload(),
+                    setup_token="a" * 32,
+                    db=self.db,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self.db.query(User).count(), 0)
+        self.assertEqual(
+            self.db.query(Organization).filter_by(slug="test-organization").count(),
+            1,
+        )
 
     def test_api_routes_have_an_authentication_boundary(self):
         public_paths = {
