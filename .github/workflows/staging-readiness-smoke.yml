@@ -1,0 +1,72 @@
+name: Staging readiness smoke check
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_base_url:
+        description: "HTTPS base URL of the isolated Render staging web service"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-readiness-smoke
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Validate the target is the staging service
+        env:
+          STAGING_BASE_URL: ${{ inputs.staging_base_url }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse
+
+          value = os.environ["STAGING_BASE_URL"].strip().rstrip("/")
+          parsed = urlparse(value)
+          if parsed.scheme != "https" or not parsed.hostname:
+              raise SystemExit("Target must be an HTTPS URL.")
+          host = parsed.hostname.lower()
+          if "staging" not in host:
+              raise SystemExit("Refusing target: hostname must explicitly identify staging.")
+          if host == "highfly-hospitality-dev.onrender.com":
+              raise SystemExit("Refusing the known development service.")
+          if parsed.username or parsed.password or parsed.query or parsed.fragment:
+              raise SystemExit("Do not include credentials, query strings, or fragments in the URL.")
+          print(f"Validated staging hostname: {host}")
+          PY
+
+      - name: Check staging readiness
+        env:
+          STAGING_BASE_URL: ${{ inputs.staging_base_url }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          url="${STAGING_BASE_URL%/}/api/ready"
+          http_code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-delay 3 \
+            --output "$response_file" --write-out '%{http_code}' "$url")"
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Staging readiness returned HTTP $http_code"
+            exit 1
+          fi
+          python - "$response_file" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if payload.get("status") != "ready":
+              raise SystemExit("Readiness payload did not report status=ready.")
+          if payload.get("mode") != "postgresql":
+              raise SystemExit("Readiness payload did not report mode=postgresql.")
+          print("PASS: staging returned HTTP 200 and reports ready/PostgreSQL.")
+          PY
