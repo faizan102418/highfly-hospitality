@@ -10,11 +10,28 @@ Use one copy of this record per release candidate. Store evidence in the approve
 | PR / release reference | |
 | Environment name and URL (no credentials) | |
 | Database type / readiness result | |
-| Tester | |
+| Staging service/resource identifiers (non-secret names only) | |
+| Operator-confirmed database resource and isolation | |
+| Deployed Alembic revision | |
+| Tester / authorized operator | |
 | Start / end time with timezone | |
 | Browser and OS | |
 | Test properties and role accounts (synthetic IDs only) | |
 | Checklist revision | |
+
+## Staging safety gate
+
+| Check | Result (Pass / Fail / Blocked) | Sanitized evidence reference / notes |
+|---|---|---|
+| Provider control plane confirms staging service exists | | |
+| Separate staging PostgreSQL resource exists | | |
+| Service is attached to the intended staging database, not DEV/production | | |
+| Credentials and secrets are isolated; no secret values recorded here | | |
+| Candidate SHA and deployed database revision are recorded | | |
+| HTTPS and health/readiness checks pass; readiness reports PostgreSQL mode | | |
+| Synthetic data only; no production guest/financial data | | |
+| Rollback owner, trigger, and last known-good revision recorded | | |
+| Authorized operator approved deployment/migration where applicable | | |
 
 ## Result summary
 
@@ -45,15 +62,20 @@ Use the smallest practical synthetic amounts. Record currency and decimal amount
 
 ## Recovery verification
 
-- Backup target was disposable test/demo data: 
+Do not begin this section until the authorized operator has approved the synthetic staging backup source, isolated recovery target, timing, and procedure.
+
+- Operator approval reference and timestamp:
+- Backup target was synthetic staging data only:
 - Artifact reference (not a public URL if access-controlled):
 - Manifest and checksum verified:
-- Restore target was a separate isolated database/copy:
-- Pre/post counts and business state compared:
-- Pre/post folio and ledger totals compared:
-- Restore duration:
+- Restore target is a separate isolated database, not staging or production:
+- Restore start/end timestamps and duration:
+- Restored schema/Alembic revision:
+- Pre/post synthetic reservation, stay, room, housekeeping, folio, payment, audit, and ledger counts/states:
+- Pre/post folio totals and ledger debit/credit totals:
 - Any missing data or warnings:
 - Evidence reference:
+- Operator review and outcome:
 
 ## Defects and exceptions
 
