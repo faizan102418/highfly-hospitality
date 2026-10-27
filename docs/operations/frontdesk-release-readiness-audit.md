@@ -13,10 +13,9 @@ These are useful code-level checks, not proof that the deployed cloud service is
 
 Provisioning and control-plane verification steps are maintained in [`render-staging-provisioning-runbook.md`](render-staging-provisioning-runbook.md). The manual [Staging readiness smoke check workflow](../../.github/workflows/staging-readiness-smoke.yml) checks the staging readiness endpoint after an authorized operator deploys and migrates the isolated staging candidate; it does not replace provider-side database-identity verification.
 
+The primary `render.yaml` Blueprint now includes the separately named staging service and PostgreSQL resource. The staging service uses a staging-only database reference and an independently generated secret; commit-triggered auto-deploy is disabled and the staging build does not run Alembic migrations. The standalone `render.staging.yaml` is retained for an explicitly separate Blueprint workflow, but it must not be synced in a way that creates duplicate resources.
 
-The checked-in `render.staging.yaml` declares a staging web service and a separately named PostgreSQL resource (`highfly-hospitality-staging-db` / `highfly_hospitality_staging`). This PR disables commit-triggered staging auto-deploy and removes `alembic upgrade head` from the build command so that a code commit/build does not implicitly deploy or migrate the staging database.
-
-**This YAML is not evidence that Render has provisioned either resource.** The service may need to be created/updated by an authorized operator in the provider control plane. Provisioning, deployment, and migrations remain explicit operator actions. Before any migration, verify the target database, review migration impact, and obtain approval from the authorized operator.
+**These YAML files are not evidence that Render has provisioned either resource.** An authorized operator must review the proposed Render Blueprint changes and confirm that only the staging service/database are added. Provisioning, deployment, and migrations remain explicit operator actions. Before any migration, verify the target database, review migration impact, and obtain approval from the authorized operator.
 
 Record the following in a completed copy of `frontdesk-acceptance-evidence-template.md`; do not store secrets, database URLs, tokens, guest documents, or real payment details:
 
