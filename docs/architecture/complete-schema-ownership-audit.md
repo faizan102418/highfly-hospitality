@@ -10,7 +10,7 @@ The existing ownership map is a useful starting point, but it is **not yet a com
 
 1. The map lists `purchase_order_items`, `purchase_receipts`, and `purchase_receipt_items`, while the current purchasing Core tables are named `purchase_order_lines`, `goods_receipts`, and `goods_receipt_lines`.
 2. The map does not include confirmed schema objects `payment_refunds`, `folio_item_windows`, `folio_item_routing`, and `invoices`.
-3. The map calls the folio-window table `folio_windows`, which is the current ORM table name, but revision `0005_stay_folio_windows` explicitly creates `stay_folio_windows`. The migration comments say metadata bootstrap may have created its target table already; that does not by itself prove the two table names are interchangeable. This needs a schema/bootstrap compatibility decision and tests against both fresh Alembic-only and metadata-bootstrap installs.
+3. The folio-window names are now source-resolved as two distinct tables: `folio_windows` is the legacy/group-level payer-window model without `stay_id`, while `stay_folio_windows` is the stay-specific model with `stay_id -> stays.id`. Revision `0005_stay_folio_windows` creates/adopts only the latter name. This resolves the naming question, but fresh-install and supported-upgrade schema parity still require execution tests.
 4. The map lists `maintenance_requests`, but the inspected current Core table is `maintenance_blocks`; no `maintenance_requests` creation was confirmed in the reviewed sources.
 5. The schema is not defined solely by explicit `op.create_table` calls. Revisions `0001`, `0003`, `0004`, and `0013` use SQLAlchemy metadata `create_all`; runtime startup in `apps/api/app/db.py` also contains compatibility ALTER statements. A grep of explicit migration DDL alone is therefore insufficient.
 
@@ -97,8 +97,8 @@ This is the reconciled inventory of table names found in the inspected model/Cor
 |---|---|---|
 | `folios` | Child of reservation | Reservation is authoritative; all linked financial objects must resolve to the same property. |
 | `folio_items` | Child of folio, optional stay | Optional stay must agree with folio/reservation and property. |
-| `folio_windows` | Child of folio/stay | Current ORM name; reconcile with migration/legacy `stay_folio_windows` before any DDL. |
-| `stay_folio_windows` | Legacy/migration-created name; unresolved | Determine whether this table exists on supported schema paths, whether it duplicates `folio_windows`, and how to migrate without data loss. Do not silently rename or drop it. |
+| `folio_windows` | Legacy/group-level payer window, child of folio | Distinct legacy model; it has no `stay_id` column. Do not reinterpret it as the stay-specific window table. |
+| `stay_folio_windows` | Stay-specific payer window, child of folio and stay | Declared by `StayFolioWindow`; `stay_id` references `stays.id`. Revision `0005_stay_folio_windows` creates/adopts this exact table name. |
 | `folio_item_windows` | Child/link of folio item and folio window | Both relationship paths must resolve to the same folio/property. |
 | `folio_item_routing` | Child/link of folio item and window | Routing target must belong to the same folio/property; idempotency and uniqueness semantics need tests. |
 | `payments` | Child of folio | Payment authorization and folio ownership must agree; protect posting/idempotency. |
@@ -146,7 +146,7 @@ This is the reconciled inventory of table names found in the inspected model/Cor
 | Missing `folio_item_windows` | Declared in `financial_models.py`. | Add dual-parent consistency rules. |
 | Missing `folio_item_routing` | Created by revision `0006`. | Add ownership and window/folio integrity rules. |
 | Missing `invoices` | Declared in `financial_models.py`. | Add folio ownership, invoice numbering, and immutability/lifecycle rules. |
-| `folio_windows` vs `stay_folio_windows` | ORM/legacy SQL use `folio_windows`; revision `0005` names `stay_folio_windows`. | Resolve as a first-class migration/bootstrap compatibility issue; inspect supported databases before any change. |
+| `folio_windows` vs `stay_folio_windows` | Two distinct source-level models with different parent semantics. | Keep both names and relationships distinct; verify fresh-install and supported-upgrade schema parity before any DDL. |
 
 ## Cross-cutting risks to resolve
 
@@ -165,7 +165,7 @@ This is the reconciled inventory of table names found in the inspected model/Cor
 - [ ] Compare the above table inventory with live model metadata and every migration source in CI; generate a machine-readable table inventory in tests if feasible.
 - [ ] Exercise fresh SQLite, fresh PostgreSQL, and supported upgrade paths through revision `0023`; compare tables, columns, indexes, unique constraints, foreign keys and triggers.
 - [ ] Inspect every property-bearing root and each child foreign-key chain for cross-property writes and reads.
-- [ ] Fix the documentation naming mismatches and resolve the `folio_windows` / `stay_folio_windows` issue with tests before proposing a schema migration.
+- [ ] Fix remaining purchasing/maintenance documentation naming mismatches; keep the distinct folio-window contract covered by tests and verify fresh-install/upgrade parity before any schema change.
 - [ ] Add cross-tenant negative tests for read/list/report/export/create/update/delete, plus financial posting/refund/purchasing/housekeeping flows.
 - [ ] Decide roles and guest-sharing policies.
 - [ ] Only after review, propose implementation migrations as a separate pull request with safe failure behavior and no guessed legacy ownership.
