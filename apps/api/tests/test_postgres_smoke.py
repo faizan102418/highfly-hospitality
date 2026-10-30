@@ -100,8 +100,12 @@ class PostgreSQLSmokeTest(unittest.TestCase):
             db.add(room)
             db.flush()
 
-            room.status = "dirty"
-            db.flush()
+            # Exercise the PostgreSQL trigger directly; the ORM before_flush
+            # hook is a separate application path with its own business-date lookup.
+            db.execute(
+                text("UPDATE rooms SET status = 'dirty' WHERE id = :room_id"),
+                {"room_id": room.id},
+            )
 
             generated_date = db.execute(
                 text("SELECT business_date FROM housekeeping_tasks WHERE room_id = :room_id"),
