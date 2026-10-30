@@ -24,23 +24,21 @@ These are proposals, not implemented behavior.
 | Tenant enforcement | Service authorization on every read/write plus database constraints for critical same-property relationships where supported. | A valid foreign key alone does not prove both rows belong to the same property. |
 | Database support | Treat SQLite and PostgreSQL as separate test targets; document any invariant that is only enforced on PostgreSQL and provide a portable safeguard where required. | Revision `0023` has PostgreSQL-specific trigger behavior. |
 
-## 2. Blocking schema reconciliation: folio-window names
+## 2. Folio-window model distinction and schema-parity verification
 
-The source audit found a material naming discrepancy:
+The source contract now establishes two distinct models:
 
-- ORM metadata and legacy SQL use `folio_windows`.
-- Alembic revision `0005_stay_folio_windows` explicitly creates/adopts `stay_folio_windows`.
-- Revision comments indicate metadata bootstrap may already have created a target table, but that does not establish that all installation paths converge on the same schema.
+- `folio_windows` is the legacy/group-level payer-window table and has no `stay_id`.
+- `stay_folio_windows` is the stay-specific payer-window table; `stay_id` references `stays.id`.
+- Alembic revision `0005_stay_folio_windows` creates/adopts the exact `stay_folio_windows` table name. Similar names do not make the tables interchangeable.
 
-**Decision required:** Do not rename, drop, merge, or create a compatibility view for either table until we can demonstrate the intended schema on each supported installation path.
+**Decision:** Preserve both table names and their distinct parent semantics. Do not rename, drop, merge, or create a compatibility view based only on naming similarity.
 
-Required evidence before proposing DDL:
+Remaining evidence before any DDL or release sign-off:
 
-1. Inspect the exact model declaration, revision `0005`, later migrations, legacy SQL, and runtime bootstrap behavior.
-2. Run fresh Alembic-only and supported metadata-bootstrap installs against disposable SQLite and PostgreSQL databases.
-3. Compare actual tables, columns, constraints, indexes, and references.
-4. If both names can exist, define a non-destructive data reconciliation plan and tests before any migration is proposed.
-5. Confirm the actual revision and schema of any target environment separately; source code alone does not establish deployed state.
+1. Exercise fresh Alembic-only installs and supported upgrade paths against disposable SQLite and PostgreSQL databases.
+2. Compare actual tables, columns, constraints, indexes, and foreign-key targets for both tables.
+3. Confirm the actual revision and schema of each target environment separately; source code alone does not establish deployed state.
 
 ## 3. Relationship integrity requirements
 
@@ -73,7 +71,7 @@ Do not drop a global constraint merely because property-scoped uniqueness seems 
 No ownership migration or application behavior change should begin until the following are reviewed:
 
 - [ ] Approve or revise the proposed decisions in section 1.
-- [ ] Resolve the `folio_windows` / `stay_folio_windows` compatibility question with repeatable tests.
+- [ ] Preserve the distinct folio-window contract and verify fresh-install/upgrade schema parity with repeatable SQLite and PostgreSQL tests.
 - [ ] Produce a source-backed table/relationship inventory covering ORM metadata, Core declarations, Alembic, legacy SQL, and runtime bootstrap.
 - [ ] Record current foreign keys, unique constraints, indexes, and ownership paths for each table.
 - [ ] Identify exact endpoint/service/query paths requiring authorization changes.

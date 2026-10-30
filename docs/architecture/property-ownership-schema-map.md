@@ -8,7 +8,7 @@
 
 HighFly Hospitality is a cloud-first, multi-tenant SaaS PMS. La Serene is a reference property, not a special case in application logic. Every request and every data mutation must be scoped to an authorized property and its owning organization.
 
-This inventory is a design aid, not proof that every existing query, foreign key, or unique constraint is tenant-safe. Before any ownership migration is proposed, inspect all migration-created tables, bootstrap/legacy schema paths, raw SQL, report queries, and write paths against this map.
+This inventory is a design aid, not proof that every existing query, foreign key, or unique constraint is tenant-safe. The folio-window naming contract is source-resolved, but deployed schema parity is not proven. Before any ownership migration is proposed, inspect all migration-created tables, bootstrap/legacy schema paths, raw SQL, report queries, and write paths against this map.
 
 ## 2. Ownership classes
 
@@ -59,7 +59,8 @@ The current model contains more than the core front-desk tables. The following i
 | Table | Proposed ownership | Notes / review requirement |
 |---|---|---|
 | `folios` | Property child of reservation | Reservation and folio ownership must be consistent; one folio per reservation is the current model. |
-| `folio_windows` | Property child of folio/stay | Validate the parent chain and any room/stay references. |
+| `folio_windows` | Legacy/group-level payer window, child of folio | This distinct legacy model has no `stay_id`; do not conflate it with the stay-specific table. |
+| `stay_folio_windows` | Property child of folio and stay | Stay-specific payer window; `stay_id` references `stays.id`. |
 | `folio_items` | Property child of folio (optional stay link) | If both folio and stay are set, they must resolve to the same property and compatible reservation. |
 | `folio_item_windows` | Property child/link of folio item and folio window | Both relationship paths must resolve to the same folio/property. |
 | `folio_item_routing` | Property child/link of folio item and window | Routing target must belong to the same folio/property; verify idempotency and uniqueness semantics. |
@@ -108,7 +109,7 @@ The `room_inspections` and maintenance/task history entries are inventory checks
 ## 4. Naming and schema-source cautions
 
 - The purchasing Core tables are `purchase_order_lines`, `goods_receipts`, and `goods_receipt_lines`—not `purchase_order_items`, `purchase_receipts`, or `purchase_receipt_items`. Keep documentation and future constraints aligned with the actual declarations.
-- The current ORM model uses `folio_windows`, while revision `0005_stay_folio_windows` and legacy SQL refer to `stay_folio_windows`. Do not assume these are interchangeable or rename/drop either table without testing fresh Alembic-only installs, metadata-bootstrap installs, and supported upgrades.
+- `folio_windows` and `stay_folio_windows` are distinct tables with different parent semantics: the legacy/group-level `folio_windows` has no `stay_id`; `stay_folio_windows` is stay-specific and references `stays.id`. Revision `0005_stay_folio_windows` creates/adopts the latter exact name. Keep both tables distinct; verify fresh-install and supported-upgrade schema parity before any DDL.
 - Schema behavior is spread across Alembic, SQLAlchemy metadata declarations, legacy SQL, and SQLite runtime compatibility edits. Source-level inventory must include all of these paths.
 
 ## 5. Important gaps and design decisions
