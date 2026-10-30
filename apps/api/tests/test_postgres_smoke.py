@@ -1,8 +1,9 @@
 import unittest
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -11,7 +12,8 @@ from app.db import engine
 # Stay lives in pms_core.py rather than models.py and LedgerEntry references it.
 from app.pms_core import Stay  # noqa: F401
 from app.ledger import post_transaction, reverse_transaction
-from app.models import BusinessDateState, FinancialTransaction, LedgerEntry
+from app.models import BusinessDateState, FinancialTransaction, LedgerEntry, Room, RoomType
+from app.tenancy import Organization, Property
 from tenant_test_support import ensure_test_property
 
 
@@ -25,6 +27,92 @@ class PostgreSQLSmokeTest(unittest.TestCase):
     def setUpClass(cls):
         if engine.dialect.name != "postgresql":
             raise unittest.SkipTest("HMS_DATABASE_URL is not PostgreSQL")
+
+    def test_dirty_room_housekeeping_uses_its_own_property_business_date(self):
+        """A room in property B must not inherit property A's business date."""
+        with Session(engine) as db:
+            first_state = db.get(BusinessDateState, 1)
+            if first_state is None:
+                first_suffix = "first"
+                first_org = Organization(
+                    name=f"CI Housekeeping First {first_suffix}",
+                    slug=f"ci-housekeeping-first-{first_suffix}",
+                )
+                db.add(first_org)
+                db.flush()
+                first_property = Property(
+                    organization_id=first_org.id,
+                    name="CI Housekeeping First",
+                    code="HK-FIRST",
+                    slug="ci-housekeeping-first",
+                    timezone="UTC",
+                    currency="PKR",
+                )
+                db.add(first_property)
+                db.flush()
+                first_state = BusinessDateState(
+                    property_id=first_property.id,
+                    current_business_date=date(2026, 10, 1),
+                )
+                db.add(first_state)
+                db.flush()
+            else:
+                first_state.current_business_date = date(2026, 10, 1)
+
+            suffix = uuid4().hex[:10]
+            organization = Organization(
+                name=f"CI Housekeeping Tenant {suffix}",
+                slug=f"ci-housekeeping-tenant-{suffix}",
+            )
+            db.add(organization)
+            db.flush()
+            property_ = Property(
+                organization_id=organization.id,
+                name=f"CI Housekeeping Property {suffix}",
+                code=f"HK-{suffix}",
+                slug=f"ci-housekeeping-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(property_)
+            db.flush()
+
+            target_date = date(2026, 10, 2)
+            db.add(
+                BusinessDateState(
+                    property_id=property_.id,
+                    current_business_date=target_date,
+                )
+            )
+            room_type = RoomType(
+                property_id=property_.id,
+                name=f"CI Housekeeping Room Type {suffix}",
+                base_rate=Decimal("100.00"),
+            )
+            db.add(room_type)
+            db.flush()
+            room = Room(
+                property_id=property_.id,
+                number=f"HK-{suffix}",
+                room_type_id=room_type.id,
+                status="available",
+            )
+            db.add(room)
+            db.flush()
+
+            # Exercise the PostgreSQL trigger directly; the ORM before_flush
+            # hook is a separate application path with its own business-date lookup.
+            db.execute(
+                text("UPDATE rooms SET status = 'dirty' WHERE id = :room_id"),
+                {"room_id": room.id},
+            )
+
+            generated_date = db.execute(
+                text("SELECT business_date FROM housekeeping_tasks WHERE room_id = :room_id"),
+                {"room_id": room.id},
+            ).scalar_one()
+            self.assertEqual(first_state.current_business_date, date(2026, 10, 1))
+            self.assertEqual(generated_date, target_date)
 
     def test_expected_tables_exist(self):
         names = set(inspect(engine).get_table_names())
