@@ -1,6 +1,7 @@
 import unittest
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import DBAPIError
