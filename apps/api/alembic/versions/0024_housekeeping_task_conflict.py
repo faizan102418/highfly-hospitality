@@ -19,10 +19,12 @@ def upgrade() -> None:
         BEGIN
             IF NEW.status='dirty' AND OLD.status IS DISTINCT FROM 'dirty' THEN
                 SELECT current_business_date INTO current_date_value
-                FROM business_date_state WHERE id=1;
+                FROM business_date_state
+                WHERE property_id = NEW.property_id
+                FOR UPDATE;
                 IF current_date_value IS NULL THEN
                     RAISE EXCEPTION USING ERRCODE='55000',
-                        MESSAGE='Business date is not initialized';
+                        MESSAGE=format('Business date is not initialized for property %s', NEW.property_id);
                 END IF;
 
                 INSERT INTO housekeeping_tasks (
