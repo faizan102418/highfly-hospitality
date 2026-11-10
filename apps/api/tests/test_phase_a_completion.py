@@ -716,6 +716,13 @@ class PhaseACompletionTests(unittest.TestCase):
 
 
     def test_folio_payment_locks_folio_before_balance_check(self):
+        post_accrued_room_charges(
+            self.db,
+            self.reservation,
+            self.folio,
+            date(2026, 9, 8),
+            self.user.id,
+        )
         add_folio_item(
             self.folio.id,
             FolioItemCreate(
