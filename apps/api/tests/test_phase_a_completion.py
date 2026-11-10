@@ -729,7 +729,7 @@ class PhaseACompletionTests(unittest.TestCase):
                 description="Concurrency test charge",
                 category="other",
                 quantity=Decimal("1"),
-                unit_price=Decimal("100.00"),
+                unit_price=Decimal("300.00"),
                 discount=Decimal("0.00"),
             ),
             self.db,
