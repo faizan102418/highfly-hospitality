@@ -67,6 +67,43 @@ def money(value: Decimal) -> Decimal:
     return Decimal(value).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
+
+
+def allocate_reservation_deposit(required_amounts: list[Decimal], deposit_received: Decimal) -> list[Decimal]:
+    """Allocate an advance proportionally across stays, preserving exact cents."""
+    required = [money(amount) for amount in required_amounts]
+    deposit = money(deposit_received)
+    total_required = money(sum(required, Decimal("0.00")))
+    if deposit < 0:
+        raise ValueError("Deposit received cannot be negative")
+    if deposit > total_required:
+        raise ValueError("Deposit received exceeds required deposit")
+
+    allocations: list[Decimal] = []
+    remaining_deposit = deposit
+    remaining_required = total_required
+    for index, amount_required in enumerate(required):
+        if remaining_deposit <= 0 or amount_required <= 0:
+            allocations.append(Decimal("0.00"))
+            remaining_required = money(remaining_required - amount_required)
+            continue
+        if index == len(required) - 1:
+            allocation = min(amount_required, remaining_deposit)
+        else:
+            allocation = min(
+                amount_required,
+                money(remaining_deposit * amount_required / remaining_required),
+            )
+        allocation = money(allocation)
+        allocations.append(allocation)
+        remaining_deposit = money(remaining_deposit - allocation)
+        remaining_required = money(remaining_required - amount_required)
+
+    if remaining_deposit > 0:
+        raise ValueError("Deposit could not be fully allocated to stay requirements")
+    return allocations
+
+
 def discount_values(rate: Decimal, percent: Decimal, fixed: Decimal) -> tuple[Decimal, Decimal]:
     """Apply percentage and fixed discounts cumulatively, capped at gross."""
     gross = money(rate)
@@ -199,27 +236,15 @@ def create_reservation_workflow(payload: ReservationWorkflowCreate, db: Session 
 
     # Booking deposits are real cash receipts. They may not exceed the
     # authoritative deposit requirement for the reservation.
-    remaining_deposit = money(payload.deposit_received)
-    total_required_deposit = money(sum((stay.deposit_required for stay in stays), Decimal("0.00")))
-    if remaining_deposit > total_required_deposit:
+    required_by_stay = [money(stay.deposit_required) for stay in stays]
+    total_required_deposit = money(sum(required_by_stay, Decimal("0.00")))
+    if payload.deposit_received > total_required_deposit:
         raise HTTPException(
             status_code=409,
-            detail=f"Deposit received {remaining_deposit} exceeds required deposit {total_required_deposit}",
+            detail=f"Deposit received {money(payload.deposit_received)} exceeds required deposit {total_required_deposit}",
         )
-    remaining_value = total_required_deposit
-    for index, stay in enumerate(stays):
-        required = money(stay.deposit_required)
-        if remaining_deposit <= 0:
-            break
-        if index == len(stays) - 1:
-            allocation = min(required, remaining_deposit)
-        else:
-            allocation = money(
-                min(
-                    required,
-                    remaining_deposit * required / remaining_value,
-                )
-            )
+    deposit_allocations = allocate_reservation_deposit(required_by_stay, payload.deposit_received)
+    for stay, allocation in zip(stays, deposit_allocations):
         if allocation <= 0:
             continue
         deposit = DepositTransaction(
