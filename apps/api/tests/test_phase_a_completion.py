@@ -2,7 +2,8 @@ import unittest
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.dialects import postgresql
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -546,8 +547,24 @@ class PhaseACompletionTests(unittest.TestCase):
             self.user,
         )
 
-        first = atomic_checkout(reservation.id, self.db, self.user)
+        checkout_lock_sql = []
+
+        def capture_checkout_locks(execute_state):
+            statement = execute_state.statement
+            if getattr(statement, "_for_update_arg", None) is not None:
+                checkout_lock_sql.append(str(statement.compile(dialect=postgresql.dialect())))
+
+        event.listen(self.db, "do_orm_execute", capture_checkout_locks)
+        try:
+            first = atomic_checkout(reservation.id, self.db, self.user)
+        finally:
+            event.remove(self.db, "do_orm_execute", capture_checkout_locks)
+
         self.assertEqual(first["status"], "checked_out")
+        locked_sql = "\\n".join(checkout_lock_sql)
+        for table in ("reservations", "folios", "stays", "rooms"):
+            self.assertIn(f"FROM {table}", locked_sql)
+        self.assertGreaterEqual(locked_sql.count("FOR UPDATE"), 4)
         before_retry = {
             "financial_transactions": self.db.query(FinancialTransaction).count(),
             "folio_items": self.db.query(FolioItem).count(),
