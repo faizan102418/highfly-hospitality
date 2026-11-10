@@ -71,7 +71,13 @@ def atomic_checkout(
     user: User,
 ) -> dict:
     """Authoritative checkout state transition shared by the API checkout route."""
-    reservation = db.get(Reservation, reservation_id)
+    # Serialize all checkouts for this reservation. The folio lock below
+    # also coordinates checkout with concurrent charges and payments.
+    reservation = db.scalar(
+        select(Reservation)
+        .where(Reservation.id == reservation_id)
+        .with_for_update()
+    )
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
     # Checkout mutates the reservation, folio, stay records, and rooms. Resolve
@@ -85,6 +91,7 @@ def atomic_checkout(
         .where(Folio.reservation_id == reservation.id)
         .order_by(Folio.id)
         .limit(1)
+        .with_for_update()
     )
     if not folio:
         raise HTTPException(status_code=409, detail="Reservation has no folio")
@@ -98,12 +105,20 @@ def atomic_checkout(
         select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)
     ).all()
     stays = db.scalars(
-        select(Stay).where(Stay.reservation_id == reservation.id).order_by(Stay.id)
+        select(Stay)
+        .where(Stay.reservation_id == reservation.id)
+        .order_by(Stay.id)
+        .with_for_update()
     ).all()
     referenced_room_ids = set(room_ids) | {stay.room_id for stay in stays}
     if not room_ids or not referenced_room_ids:
         raise HTTPException(status_code=409, detail="Reservation has an invalid room assignment")
-    rooms = db.scalars(select(Room).where(Room.id.in_(referenced_room_ids))).all()
+    rooms = db.scalars(
+        select(Room)
+        .where(Room.id.in_(referenced_room_ids))
+        .order_by(Room.id)
+        .with_for_update()
+    ).all()
     rooms_by_id = {room.id: room for room in rooms}
     if len(rooms_by_id) != len(referenced_room_ids) or any(
         room.property_id != property_.id for room in rooms
