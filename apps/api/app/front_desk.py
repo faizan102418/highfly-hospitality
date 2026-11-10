@@ -71,18 +71,28 @@ def atomic_checkout(
     user: User,
 ) -> dict:
     """Authoritative checkout state transition shared by the API checkout route."""
-    # Serialize all checkouts for this reservation. The folio lock below
-    # also coordinates checkout with concurrent charges and payments.
+    # Read property context without locking first so unauthorized requests
+    # cannot queue behind an authorized checkout on another property's row.
+    reservation_property_id = db.scalar(
+        select(Reservation.property_id).where(Reservation.id == reservation_id)
+    )
+    if reservation_property_id is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    property_ = resolve_authorized_property(db, user.id, reservation_property_id)
+
+    # Serialize checkouts only after authorization, and scope the lock to the
+    # authorized property. The folio lock coordinates financial mutations.
     reservation = db.scalar(
         select(Reservation)
-        .where(Reservation.id == reservation_id)
+        .where(
+            Reservation.id == reservation_id,
+            Reservation.property_id == property_.id,
+        )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
-    # Checkout mutates the reservation, folio, stay records, and rooms. Resolve
-    # explicit property access before checking state or posting any charges.
-    property_ = resolve_authorized_property(db, user.id, reservation.property_id)
     if reservation.status != "checked_in":
         raise HTTPException(status_code=409, detail="Reservation is not checked in")
 
@@ -91,7 +101,8 @@ def atomic_checkout(
         .where(Folio.reservation_id == reservation.id)
         .order_by(Folio.id)
         .limit(1)
-        .with_for_update()
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
     )
     if not folio:
         raise HTTPException(status_code=409, detail="Reservation has no folio")
