@@ -284,55 +284,108 @@ def transfer_deposit(stay_id: int, payload: DepositTransfer, db: Session = Depen
 
 
 def apply_deposit(stay_id: int, payload: DepositApply, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id, user.id)
-    folio_id = db.scalar(select(Folio.id).where(Folio.reservation_id == stay.reservation_id).limit(1))
-    if folio_id is None:
-        raise HTTPException(status_code=409, detail="No folio exists for this reservation")
+    # Resolve ownership without locks, then acquire the same reservation ->
+    # folio -> stay order used by authoritative checkout.
+    initial_stay = stay_or_404(db, stay_id, user.id)
+    reservation = db.scalar(
+        select(Reservation)
+        .where(Reservation.id == initial_stay.reservation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    folio = db.scalar(
+        select(Folio)
+        .where(Folio.reservation_id == reservation.id)
+        .order_by(Folio.id)
+        .limit(1)
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
+    )
+    if folio is None or folio.status != "open":
+        raise HTTPException(status_code=409, detail="An open folio for this stay's reservation is required")
+    stay = db.scalar(
+        select(Stay)
+        .where(Stay.id == stay_id, Stay.reservation_id == reservation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if stay is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+
     amount = payload.amount.quantize(MONEY)
     if amount > deposit_balance(db, stay.id):
         raise HTTPException(status_code=409, detail="Deposit application exceeds available balance")
-    folio = db.get(Folio, folio_id)
-    if folio is None or folio.reservation_id != stay.reservation_id or folio.status != "open":
-        raise HTTPException(status_code=409, detail="An open folio for this stay's reservation is required")
-    transaction = DepositTransaction(stay_id=stay.id, folio_id=folio_id, transaction_type="applied", amount=amount, payment_method="deposit", notes=payload.notes, created_by=user.id)
+    transaction = DepositTransaction(stay_id=stay.id, folio_id=folio.id, transaction_type="applied", amount=amount, payment_method="deposit", notes=payload.notes, created_by=user.id)
     db.add(transaction)
     db.flush()
-    payment = Payment(folio_id=folio_id, amount=amount, method="deposit", reference=f"DEPOSIT-{transaction.id}")
+    payment = Payment(folio_id=folio.id, amount=amount, method="deposit", reference=f"DEPOSIT-{transaction.id}")
     db.add(payment)
     db.flush()
-    reservation = db.get(Reservation, stay.reservation_id)
-    if reservation is None:
-        raise HTTPException(status_code=409, detail="Stay reservation not found")
     post_transaction(
         db,
         transaction_type="deposit_applied",
         description=f"Deposit application #{transaction.id}",
         reference_type="deposit",
         reference_id=str(transaction.id),
-        folio_id=folio_id,
+        folio_id=folio.id,
         reservation_id=reservation.id,
         created_by=user.id,
         lines=[
-            {"account": "Guest Deposits", "direction": "debit", "amount": amount, "folio_id": folio_id, "stay_id": stay.id, "payment_method": "deposit", "reference": payment.reference},
-            {"account": "Guest Receivables", "direction": "credit", "amount": amount, "folio_id": folio_id, "stay_id": stay.id, "payment_method": "deposit", "reference": payment.reference},
+            {"account": "Guest Deposits", "direction": "debit", "amount": amount, "folio_id": folio.id, "stay_id": stay.id, "payment_method": "deposit", "reference": payment.reference},
+            {"account": "Guest Receivables", "direction": "credit", "amount": amount, "folio_id": folio.id, "stay_id": stay.id, "payment_method": "deposit", "reference": payment.reference},
         ],
     )
-    audit(db, user.id, "deposit_apply", "deposit_transaction", transaction.id, {"stay_id": stay.id, "folio_id": folio_id, "amount": str(amount)})
+    audit(db, user.id, "deposit_apply", "deposit_transaction", transaction.id, {"stay_id": stay.id, "folio_id": folio.id, "amount": str(amount)})
     db.commit()
-    return {"id": transaction.id, "stay_id": stay.id, "folio_id": folio_id, "payment_id": payment.id, "applied": amount, "balance": deposit_balance(db, stay.id)}
+    return {"id": transaction.id, "stay_id": stay.id, "folio_id": folio.id, "payment_id": payment.id, "applied": amount, "balance": deposit_balance(db, stay.id)}
 
 
 @router.post("/stays/{stay_id}/move-room", status_code=201)
 def move_checked_in_stay(stay_id: int, payload: MoveRoomRequest, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    stay = stay_or_404(db, stay_id, user.id)
-    if stay.status != "checked_in":
+    initial_stay = stay_or_404(db, stay_id, user.id)
+    reservation = db.scalar(
+        select(Reservation)
+        .where(Reservation.id == initial_stay.reservation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Stay not found")
+    folio = db.scalar(
+        select(Folio)
+        .where(Folio.reservation_id == reservation.id)
+        .order_by(Folio.id)
+        .limit(1)
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
+    )
+    if folio is None or folio.status != "open":
+        raise HTTPException(status_code=409, detail="Only stays with an open folio can use room move")
+    stay = db.scalar(
+        select(Stay)
+        .where(Stay.id == stay_id, Stay.reservation_id == reservation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if stay is None or stay.status != "checked_in":
         raise HTTPException(status_code=409, detail="Only checked-in stays can use room move")
-    source = db.get(Room, stay.room_id)
-    target = db.get(Room, payload.to_room_id)
-    if not source or not target:
+
+    room_ids = sorted({stay.room_id, payload.to_room_id})
+    locked_rooms = db.scalars(
+        select(Room)
+        .where(Room.id.in_(room_ids))
+        .order_by(Room.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    rooms = {room.id: room for room in locked_rooms}
+    source = rooms.get(stay.room_id)
+    target = rooms.get(payload.to_room_id)
+    if source is None or target is None:
         raise HTTPException(status_code=404, detail="Source or destination room not found")
-    reservation = db.get(Reservation, stay.reservation_id)
-    if reservation is None or source.property_id != reservation.property_id or target.property_id != reservation.property_id:
+    if source.property_id != reservation.property_id or target.property_id != reservation.property_id:
         raise HTTPException(status_code=409, detail="Source and destination rooms must belong to the stay's property")
     if source.id == target.id:
         raise HTTPException(status_code=400, detail="Destination room must be different")
@@ -343,10 +396,10 @@ def move_checked_in_stay(stay_id: int, payload: MoveRoomRequest, db: Session = D
     stay.room_id = target.id
     source.status = "dirty"
     target.status = "occupied"
-    link = db.scalar(select(ReservationRoom).where(ReservationRoom.reservation_id == stay.reservation_id, ReservationRoom.room_id == source.id))
+    link = db.scalar(select(ReservationRoom).where(ReservationRoom.reservation_id == reservation.id, ReservationRoom.room_id == source.id))
     if link:
         db.delete(link)
-    db.add(ReservationRoom(reservation_id=stay.reservation_id, room_id=target.id))
+    db.add(ReservationRoom(reservation_id=reservation.id, room_id=target.id))
     db.flush()
     audit(db, user.id, "room_move", "stay", stay.id, {"from_room_id": source.id, "to_room_id": target.id, "reason": payload.reason, "room_move_id": move.id})
     db.commit()

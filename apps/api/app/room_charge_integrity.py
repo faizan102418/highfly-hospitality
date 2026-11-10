@@ -130,8 +130,17 @@ def post_accrued_room_charges(
     can never satisfy a missing night for another room in the same folio.
     The operation is idempotent for a given stay/date.
     """
-    if folio.status != "open":
+    # Acquire and refresh the authoritative folio row before checking
+    # status. The caller may have loaded an open folio before checkout closed it.
+    locked_folio = db.scalar(
+        select(Folio)
+        .where(Folio.id == folio.id)
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
+    )
+    if locked_folio is None or locked_folio.status != "open":
         return 0
+    folio = locked_folio
 
     stays = db.scalars(
         select(Stay)
@@ -143,10 +152,6 @@ def post_accrued_room_charges(
         )
         .order_by(Stay.id)
     ).all()
-
-    # Serialize nightly posting for this folio so two concurrent Night Audit /
-    # Front Desk requests cannot both observe the same night as missing.
-    db.scalar(select(Folio.id).where(Folio.id == folio.id).with_for_update())
 
     posted = 0
     for stay in stays:

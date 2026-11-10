@@ -301,7 +301,7 @@ def post_order(
     business_date = get_current_business_date(db, property_id=property_.id)
     if order.business_date != business_date:
         raise HTTPException(status_code=409, detail="Restaurant order belongs to a closed business date")
-    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == order.folio_id, Reservation.property_id == property_.id).with_for_update())
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == order.folio_id, Reservation.property_id == property_.id).with_for_update(of=Folio).execution_options(populate_existing=True))
     if folio is None or folio.status != "open":
         raise HTTPException(status_code=409, detail="Restaurant order folio is unavailable")
     reservation = db.scalar(select(Reservation).where(Reservation.id == order.reservation_id, Reservation.property_id == property_.id))

@@ -124,7 +124,7 @@ def atomic_checkout(reservation_id: int, db: Session = Depends(get_db), user: Us
 @router.post("/folios/{folio_id}/refunds", status_code=201)
 def refund_payment(folio_id: int, payload: RefundCreate, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id)); payment = db.get(Payment, payload.payment_id); key = (idempotency_key or "").strip()
+    folio = db.scalar(select(Folio).join(Reservation, Reservation.id == Folio.reservation_id).where(Folio.id == folio_id, Reservation.property_id == property_.id).with_for_update(of=Folio).execution_options(populate_existing=True)); payment = db.get(Payment, payload.payment_id); key = (idempotency_key or "").strip()
     if not key: raise HTTPException(status_code=400, detail="Idempotency-Key header is required for refunds")
     if len(key) > 100: raise HTTPException(status_code=400, detail="Idempotency-Key must be 100 characters or fewer")
     if not folio or not payment or payment.folio_id != folio_id: raise HTTPException(status_code=404, detail="Folio or payment not found")
