@@ -715,5 +715,40 @@ class PhaseACompletionTests(unittest.TestCase):
         self.assertEqual(self.db.get(StayOccupant, occupant.id).guest_id, foreign_guest.id)
 
 
+    def test_folio_payment_locks_folio_before_balance_check(self):
+        add_folio_item(
+            self.folio.id,
+            FolioItemCreate(
+                description="Concurrency test charge",
+                category="other",
+                quantity=Decimal("1"),
+                unit_price=Decimal("100.00"),
+                discount=Decimal("0.00"),
+            ),
+            self.db,
+            self.user,
+        )
+        payment_lock_sql = []
+
+        def capture_payment_lock(execute_state):
+            statement = execute_state.statement
+            if getattr(statement, "_for_update_arg", None) is not None:
+                payment_lock_sql.append(str(statement.compile(dialect=postgresql.dialect())))
+
+        event.listen(self.db, "do_orm_execute", capture_payment_lock)
+        try:
+            add_payment(
+                self.folio.id,
+                PaymentCreate(amount=Decimal("100.00"), method="cash", reference="FOLIO-LOCK"),
+                "folio-lock-payment",
+                self.db,
+                self.user,
+            )
+        finally:
+            event.remove(self.db, "do_orm_execute", capture_payment_lock)
+
+        self.assertTrue(any("FROM folios" in sql and "FOR UPDATE" in sql for sql in payment_lock_sql))
+
+
 if __name__ == "__main__":
     unittest.main()
