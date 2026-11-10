@@ -108,7 +108,17 @@ def list_billing(db: Session = Depends(get_db), user: User = Depends(require_rol
 @router.get("/folios/{folio_id}", response_model=FolioResponse)
 def get_folio(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
     property_ = resolve_authorized_property(db, user.id)
-    folio = property_folio_or_404(db, folio_id, property_.id)
+    folio = db.scalar(
+        select(Folio)
+        .where(
+            Folio.id == folio_id,
+            Folio.reservation_id.in_(
+                select(Reservation.id).where(Reservation.property_id == property_.id)
+            ),
+        )
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
+    )
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     return build_folio_response(db, folio)
 
@@ -123,7 +133,7 @@ def reservation_folio(reservation_id: int, db: Session = Depends(get_db), user: 
 @router.get("/folios/{folio_id}/receipt")
 def get_receipt(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception", "housekeeping"))):
     property_ = resolve_authorized_property(db, user.id)
-    folio = db.scalar(select(Folio).where(Folio.id == folio_id, Folio.reservation_id.in_(select(Reservation.id).where(Reservation.property_id == property_.id))).with_for_update())
+    folio = db.scalar(select(Folio).where(Folio.id == folio_id, Folio.reservation_id.in_(select(Reservation.id).where(Reservation.property_id == property_.id))))
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     reservation = db.get(Reservation, folio.reservation_id)
     if not reservation: raise HTTPException(status_code=404, detail="Reservation not found")
@@ -136,7 +146,18 @@ def get_receipt(folio_id: int, db: Session = Depends(get_db), user: User = Depen
 
 @router.post("/folios/{folio_id}/room-charges", response_model=FolioResponse)
 def add_room_charges(folio_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
-    folio = property_folio_or_404(db, folio_id, resolve_authorized_property(db, user.id).id)
+    property_ = resolve_authorized_property(db, user.id)
+    folio = db.scalar(
+        select(Folio)
+        .where(
+            Folio.id == folio_id,
+            Folio.reservation_id.in_(
+                select(Reservation.id).where(Reservation.property_id == property_.id)
+            ),
+        )
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
+    )
     if not folio:
         raise HTTPException(status_code=404, detail="Folio not found")
     if folio.status != "open":
@@ -229,7 +250,17 @@ def add_folio_deposit(folio_id: int, payload: FolioDepositCreate, db: Session = 
 @router.post("/folios/{folio_id}/payments", response_model=PaymentResponse, status_code=201)
 def add_payment(folio_id: int, payload: PaymentCreate, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "reception"))):
     property_ = resolve_authorized_property(db, user.id)
-    folio = property_folio_or_404(db, folio_id, property_.id)
+    folio = db.scalar(
+        select(Folio)
+        .where(
+            Folio.id == folio_id,
+            Folio.reservation_id.in_(
+                select(Reservation.id).where(Reservation.property_id == property_.id)
+            ),
+        )
+        .with_for_update(of=Folio)
+        .execution_options(populate_existing=True)
+    )
     if not folio: raise HTTPException(status_code=404, detail="Folio not found")
     reservation = db.get(Reservation, folio.reservation_id)
     if reservation is None: raise HTTPException(status_code=404, detail="Folio not found")
