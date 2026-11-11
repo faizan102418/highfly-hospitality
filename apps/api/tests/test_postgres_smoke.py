@@ -300,12 +300,29 @@ class PostgreSQLSmokeTest(unittest.TestCase):
         suffix = uuid4().hex[:12]
         business_date = date(2026, 10, 2)
         with Session(engine) as db:
-            property_ = ensure_test_property(db)
-            self._ensure_business_date(db, property_)
-            state = db.scalar(
-                select(BusinessDateState).where(BusinessDateState.property_id == property_.id)
+            organization = Organization(
+                name=f"CI Front Desk Organization {suffix}",
+                slug=f"ci-frontdesk-org-{suffix}",
             )
-            state.current_business_date = business_date
+            db.add(organization)
+            db.flush()
+            property_ = Property(
+                organization_id=organization.id,
+                name=f"CI Front Desk Property {suffix}",
+                code=f"FD-{suffix}",
+                slug=f"ci-frontdesk-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(property_)
+            db.flush()
+            db.add(
+                BusinessDateState(
+                    property_id=property_.id,
+                    current_business_date=business_date,
+                )
+            )
+            db.flush()
 
             role = db.scalar(select(Role).where(Role.name == "reception"))
             if role is None:
