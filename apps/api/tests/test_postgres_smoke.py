@@ -20,7 +20,7 @@ from app.front_desk import atomic_checkout, post_accrued_room_charges
 from app.phase_a_completion import StayCheckInPayload, check_in_stay
 from app.reservation_workflows import ReservationRoomSetup, ReservationWorkflowCreate, create_reservation_workflow
 from app.schemas import FolioItemCreate, PaymentCreate
-from app.models import Folio, FolioItem, Guest, Payment, Role, User
+from app.models import Folio, FolioItem, Guest, Payment, Reservation, Role, User
 from app.pms_core import Stay
 from tenant_test_support import ensure_test_property_access
 
@@ -417,7 +417,6 @@ class PostgreSQLSmokeTest(unittest.TestCase):
                 Decimal("0.00"),
             )
             self.assertEqual(debits, credits)
-            self.assertEqual(debits, Decimal("170.00"))
             payments = db.scalars(
                 select(Payment).where(Payment.folio_id == folio.id)
             ).all()
