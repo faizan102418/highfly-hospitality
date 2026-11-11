@@ -15,6 +15,14 @@ from app.ledger import post_transaction, reverse_transaction
 from app.models import BusinessDateState, FinancialTransaction, LedgerEntry, Room, RoomType
 from app.tenancy import Organization, Property
 from tenant_test_support import ensure_test_property
+from app.billing import add_folio_item, add_payment
+from app.front_desk import atomic_checkout, post_accrued_room_charges
+from app.phase_a_completion import StayCheckInPayload, check_in_stay
+from app.reservation_workflows import ReservationRoomSetup, ReservationWorkflowCreate, create_reservation_workflow
+from app.schemas import FolioItemCreate, PaymentCreate
+from app.models import Folio, FolioItem, Guest, Payment, Reservation, Role, User
+from app.pms_core import Stay
+from tenant_test_support import ensure_test_property_access
 
 
 class PostgreSQLSmokeTest(unittest.TestCase):
@@ -279,6 +287,164 @@ class PostgreSQLSmokeTest(unittest.TestCase):
                 db.flush()
             db.rollback()
 
+
+
+    def test_postgresql_frontdesk_reservation_to_checkout_journey(self):
+        """Exercise the first-client front-desk lifecycle against real PostgreSQL."""
+        from datetime import date
+        from decimal import Decimal
+        from uuid import uuid4
+
+        from sqlalchemy import select
+
+        suffix = uuid4().hex[:12]
+        business_date = date(2026, 10, 2)
+        with Session(engine) as db:
+            organization = Organization(
+                name=f"CI Front Desk Organization {suffix}",
+                slug=f"ci-frontdesk-org-{suffix}",
+            )
+            db.add(organization)
+            db.flush()
+            property_ = Property(
+                organization_id=organization.id,
+                name=f"CI Front Desk Property {suffix}",
+                code=f"FD-{suffix}",
+                slug=f"ci-frontdesk-property-{suffix}",
+                timezone="UTC",
+                currency="PKR",
+            )
+            db.add(property_)
+            db.flush()
+            db.add(
+                BusinessDateState(
+                    property_id=property_.id,
+                    current_business_date=business_date,
+                )
+            )
+            db.flush()
+
+            role = db.scalar(select(Role).where(Role.name == "reception"))
+            if role is None:
+                role = Role(name="reception")
+                db.add(role)
+                db.flush()
+            user = User(
+                username=f"ci-frontdesk-{suffix}",
+                password_hash="postgres-smoke-test-only",
+                role_id=role.id,
+            )
+            db.add(user)
+            db.flush()
+            ensure_test_property_access(db, user.id, property_.id)
+
+            guest = Guest(property_id=property_.id, full_name=f"CI Front Desk Guest {suffix}")
+            room_type = RoomType(
+                property_id=property_.id,
+                name=f"CI Front Desk Type {suffix}",
+                base_rate=Decimal("150.00"),
+            )
+            db.add_all([guest, room_type])
+            db.flush()
+            room = Room(
+                property_id=property_.id,
+                number=f"FD-{suffix}",
+                room_type_id=room_type.id,
+                status="available",
+            )
+            db.add(room)
+            db.flush()
+            db.commit()
+
+            created = create_reservation_workflow(
+                ReservationWorkflowCreate(
+                    guest_id=guest.id,
+                    check_in=business_date,
+                    check_out=date(2026, 10, 3),
+                    rooms=[
+                        ReservationRoomSetup(
+                            room_id=room.id,
+                            occupant_guest_id=guest.id,
+                            agreed_rate=Decimal("150.00"),
+                        )
+                    ],
+                    deposit_received=Decimal("0.00"),
+                ),
+                db,
+                user,
+            )
+            reservation = db.get(Reservation, created["id"])
+            stay = db.scalar(select(Stay).where(Stay.reservation_id == reservation.id))
+            folio = db.get(Folio, created["folio_id"])
+            self.assertIsNotNone(stay)
+            self.assertEqual(folio.status, "open")
+
+            checked_in = check_in_stay(
+                stay.id,
+                StayCheckInPayload(reason="PostgreSQL front-desk smoke journey"),
+                db,
+                user,
+            )
+            self.assertEqual(checked_in["status"], "checked_in")
+            self.assertEqual(db.get(Room, room.id).status, "occupied")
+
+            posted = post_accrued_room_charges(
+                db, reservation, folio, business_date, user.id
+            )
+            self.assertEqual(posted, 1)
+            add_folio_item(
+                folio.id,
+                FolioItemCreate(
+                    description="Front desk minibar",
+                    category="other",
+                    quantity=Decimal("1"),
+                    unit_price=Decimal("20.00"),
+                    discount=Decimal("0.00"),
+                ),
+                db,
+                user,
+            )
+            add_payment(
+                folio.id,
+                PaymentCreate(
+                    amount=Decimal("170.00"),
+                    method="cash",
+                    reference=f"CI-FD-{suffix}",
+                ),
+                f"ci-frontdesk-payment-{suffix}",
+                db,
+                user,
+            )
+
+            checkout = atomic_checkout(reservation.id, db, user)
+            self.assertEqual(checkout["status"], "checked_out")
+            self.assertEqual(checkout["folio_status"], "closed")
+            self.assertEqual(db.get(Stay, stay.id).status, "completed")
+            self.assertEqual(db.get(Room, room.id).status, "dirty")
+
+            entries = db.scalars(
+                select(LedgerEntry).where(LedgerEntry.folio_id == folio.id)
+            ).all()
+            debits = sum(
+                (Decimal(entry.amount) for entry in entries if entry.direction == "debit"),
+                Decimal("0.00"),
+            )
+            credits = sum(
+                (Decimal(entry.amount) for entry in entries if entry.direction == "credit"),
+                Decimal("0.00"),
+            )
+            self.assertEqual(debits, credits)
+            payments = db.scalars(
+                select(Payment).where(Payment.folio_id == folio.id)
+            ).all()
+            items = db.scalars(
+                select(FolioItem).where(FolioItem.folio_id == folio.id)
+            ).all()
+            self.assertEqual(
+                sum((Decimal(payment.amount) for payment in payments), Decimal("0.00")),
+                Decimal("170.00"),
+            )
+            self.assertEqual(len(items), 2)
 
 if __name__ == "__main__":
     unittest.main()
