@@ -418,10 +418,17 @@ class PostgreSQLSmokeTest(unittest.TestCase):
             )
             self.assertEqual(debits, credits)
             self.assertEqual(debits, Decimal("170.00"))
+            payments = db.scalars(
+                select(Payment).where(Payment.folio_id == folio.id)
+            ).all()
+            items = db.scalars(
+                select(FolioItem).where(FolioItem.folio_id == folio.id)
+            ).all()
             self.assertEqual(
-                db.scalar(select(Payment.id).where(Payment.folio_id == folio.id)),
-                db.scalar(select(Payment.id).where(Payment.folio_id == folio.id)),
+                sum((Decimal(payment.amount) for payment in payments), Decimal("0.00")),
+                Decimal("170.00"),
             )
+            self.assertEqual(len(items), 2)
 
 if __name__ == "__main__":
     unittest.main()
