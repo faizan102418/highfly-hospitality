@@ -155,6 +155,11 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
         suffix = uuid4().hex[:10]
         with Session(engine) as db:
             property_ = ensure_test_property(db)
+            if db.scalar(
+                select(BusinessDateState.id).where(BusinessDateState.property_id == property_.id)
+            ) is None:
+                db.add(BusinessDateState(property_id=property_.id, current_business_date=date.today()))
+                db.flush()
             role = db.scalar(select(Role).where(Role.name == "admin"))
             if role is None:
                 role = Role(name="admin")
