@@ -225,6 +225,30 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
                 set(db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()),
                 original_room_ids,
             )
+
+            available_target = Room(
+                property_id=property_.id,
+                number=f"A2-{suffix}",
+                room_type_id=room_type.id,
+                status="available",
+            )
+            db.add(available_target)
+            db.flush()
+            moved = transfer_room(
+                reservation.id,
+                RoomTransferRequest(from_room_id=source.id, to_room_id=available_target.id),
+                db,
+                user,
+            )
+            self.assertEqual(moved.id, reservation.id)
+            self.assertEqual(
+                set(db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()),
+                {available_target.id},
+            )
+            self.assertEqual(db.get(Room, source.id).status, "dirty")
+            self.assertEqual(db.get(Room, available_target.id).status, "occupied")
+            moved_stay = db.scalar(select(Stay).where(Stay.reservation_id == reservation.id))
+            self.assertEqual(moved_stay.room_id, available_target.id)
             db.rollback()
 
     def test_cross_property_frontdesk_reads_writes_and_references_are_denied(self):
