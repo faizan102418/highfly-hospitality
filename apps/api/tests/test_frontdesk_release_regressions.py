@@ -151,6 +151,82 @@ class FrontDeskReleaseRegressionTests(unittest.TestCase):
             )
             db.rollback()
 
+    def test_room_transfer_rejects_dirty_or_occupied_destination_without_partial_mutation(self):
+        suffix = uuid4().hex[:10]
+        with Session(engine) as db:
+            property_ = ensure_test_property(db)
+            role = db.scalar(select(Role).where(Role.name == "admin"))
+            if role is None:
+                role = Role(name="admin")
+                db.add(role)
+                db.flush()
+            user = User(username=f"room-transfer-{suffix}", password_hash="test", role_id=role.id)
+            db.add(user)
+            db.flush()
+            db.add(PropertyUserAccess(
+                user_id=user.id,
+                property_id=property_.id,
+                access_scope="property",
+                is_primary=True,
+            ))
+            guest = Guest(property_id=property_.id, full_name=f"Transfer guest {suffix}")
+            room_type = RoomType(property_id=property_.id, name=f"Transfer type {suffix}", base_rate=Decimal("100.00"))
+            db.add_all([guest, room_type])
+            db.flush()
+            source = Room(property_id=property_.id, number=f"S-{suffix}", room_type_id=room_type.id, status="available")
+            dirty_target = Room(property_id=property_.id, number=f"D-{suffix}", room_type_id=room_type.id, status="dirty")
+            occupied_target = Room(property_id=property_.id, number=f"O-{suffix}", room_type_id=room_type.id, status="occupied")
+            db.add_all([source, dirty_target, occupied_target])
+            db.flush()
+            reservation = create_reservation(
+                ReservationCreate(
+                    guest_id=guest.id,
+                    check_in=date.today(),
+                    check_out=date.today() + timedelta(days=1),
+                    room_ids=[source.id],
+                ),
+                db,
+                user,
+            )
+            db.commit()
+            check_in_reservation(reservation.id, db, user)
+
+            original_room_ids = set(db.scalars(
+                select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)
+            ).all())
+            self.assertEqual(original_room_ids, {source.id})
+
+            for target, label in ((dirty_target, "dirty"), (occupied_target, "occupied")):
+                with self.subTest(destination=label):
+                    with self.assertRaises(HTTPException) as rejected:
+                        transfer_room(
+                            reservation.id,
+                            RoomTransferRequest(from_room_id=source.id, to_room_id=target.id),
+                            db,
+                            user,
+                        )
+                    self.assertEqual(rejected.exception.status_code, 409)
+                    current_room_ids = set(db.scalars(
+                        select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)
+                    ).all())
+                    self.assertEqual(current_room_ids, original_room_ids)
+                    self.assertEqual(db.get(Room, source.id).status, "occupied")
+                    self.assertEqual(db.get(Room, target.id).status, label)
+
+            with self.assertRaises(HTTPException) as same_room:
+                transfer_room(
+                    reservation.id,
+                    RoomTransferRequest(from_room_id=source.id, to_room_id=source.id),
+                    db,
+                    user,
+                )
+            self.assertEqual(same_room.exception.status_code, 400)
+            self.assertEqual(
+                set(db.scalars(select(ReservationRoom.room_id).where(ReservationRoom.reservation_id == reservation.id)).all()),
+                original_room_ids,
+            )
+            db.rollback()
+
     def test_cross_property_frontdesk_reads_writes_and_references_are_denied(self):
         suffix = uuid4().hex[:10]
         with Session(engine) as db:
