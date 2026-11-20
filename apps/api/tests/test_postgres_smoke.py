@@ -108,19 +108,26 @@ class PostgreSQLSmokeTest(unittest.TestCase):
             db.add(room)
             db.flush()
 
-            # Exercise the PostgreSQL trigger directly; the ORM before_flush
-            # hook is a separate application path with its own business-date lookup.
-            db.execute(
-                text("UPDATE rooms SET status = 'dirty' WHERE id = :room_id"),
-                {"room_id": room.id},
-            )
+            # Exercise the ORM hook and PostgreSQL trigger together. The hook
+            # creates the task first; the trigger must safely observe that active
+            # task and avoid creating a duplicate.
+            room.status = "dirty"
+            db.flush()
 
             generated_date = db.execute(
                 text("SELECT business_date FROM housekeeping_tasks WHERE room_id = :room_id"),
                 {"room_id": room.id},
             ).scalar_one()
+            active_task_count = db.execute(
+                text("""
+                    SELECT count(*) FROM housekeeping_tasks
+                    WHERE room_id = :room_id AND status IN ('pending', 'in_progress')
+                """),
+                {"room_id": room.id},
+            ).scalar_one()
             self.assertEqual(first_state.current_business_date, date(2026, 10, 1))
             self.assertEqual(generated_date, target_date)
+            self.assertEqual(active_task_count, 1)
 
     def test_expected_tables_exist(self):
         names = set(inspect(engine).get_table_names())

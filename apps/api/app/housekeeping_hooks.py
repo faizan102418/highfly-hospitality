@@ -17,10 +17,11 @@ def create_housekeeping_task_when_room_becomes_dirty(session: Session, flush_con
         history = inspect(room).attrs.status.history
         if "dirty" not in history.added:
             continue
+        # Serialize task stamping with night-audit business-date advancement.
         state = session.scalar(
-            select(BusinessDateState).where(
-                BusinessDateState.property_id == room.property_id
-            )
+            select(BusinessDateState)
+            .where(BusinessDateState.property_id == room.property_id)
+            .with_for_update()
         )
         if state is None:
             # Legacy/local sessions without the persisted business-date authority
